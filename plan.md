@@ -431,3 +431,463 @@ def convert_to_ist(utc_timestamp):
 - All timestamps in IST (Indian Standard Time)
 - Output format optimized for future web app integration
 - Terminal-based for MVP, no fancy UI yet
+
+---
+
+# Phase 2: POD Categorization
+
+## Overview
+
+Phase 2 extends the ticket summarizer to automatically categorize support tickets into PODs (Product Organizational Domains) based on the synthesis summary generated in Phase 1. This addresses the core problem of incorrect categorization due to missing comment thread context.
+
+## Problem Statement - Phase 2
+
+**Current State (Phase 1):**
+- Tickets are fetched and synthesized successfully
+- Synthesis captures complete context from comment threads
+- No automatic categorization into product areas
+
+**Problem:**
+- Existing keyword-based bucketing uses only subject, description, and custom fields
+- Comment thread context is ignored, leading to miscategorization
+- Example: Tickets 87239 and 87249 incorrectly categorized as WFE instead of Guidance
+
+**Phase 2 Goal:**
+- Automatically categorize tickets into PODs using synthesis context
+- Provide reasoning and confidence scoring for each categorization
+- Enable human review of ambiguous cases ("not confident" tickets)
+
+## Technical Architecture - Phase 2
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ORCHESTRATOR (main.py)                    │
+│         CLI, progress tracking, JSON generation              │
+└──────┬──────────────────┬──────────────────┬─────────────────┘
+       │                  │                  │
+   ┌───▼────┐      ┌──────▼──────┐   ┌──────▼──────────┐
+   │FETCHER │      │SYNTHESIZER  │   │  CATEGORIZER    │
+   │        │      │             │   │ (categorizer.py)│
+   │Phase 1 │      │  Phase 2    │   │    Phase 3      │
+   └────────┘      └─────────────┘   └─────────────────┘
+                                              │
+                                     - POD assignment
+                                     - Reasoning
+                                     - Confidence scoring
+                                     - Alternative PODs
+```
+
+## Updated File Structure
+
+```
+ticket-summarizer/
+├── plan.md                 # This file (updated)
+├── README.md               # Setup & usage (updated)
+├── requirements.txt        # Python dependencies (no change)
+├── .gitignore             # Git ignore patterns
+├── .env.example           # Environment variable template
+├── main.py                # Entry point (UPDATED - Phase 3 added)
+├── config.py              # Configuration (UPDATED - categorization prompt)
+├── utils.py               # Utilities (UPDATED - validation functions)
+├── fetcher.py             # Zendesk API client
+├── synthesizer.py         # Gemini LLM client
+├── categorizer.py         # POD categorization (NEW)
+├── Tag File - Tags and Definitions.csv  # POD reference data
+├── logs/                  # Application logs
+└── input_tickets.csv      # User-provided input
+```
+
+## Module Specifications - Phase 2
+
+### 6. categorizer.py - POD Categorizer (NEW)
+
+**Purpose**: Categorize synthesized tickets into PODs using LLM-based judgment
+
+**Class**: `TicketCategorizer`
+
+**Methods**:
+- `categorize_ticket(ticket_data)`: Categorize a single synthesized ticket
+- `format_categorization_prompt(ticket_data)`: Format synthesis into categorization prompt
+- `parse_categorization_response(response_text)`: Parse LLM response into structured data
+- `categorize_multiple(tickets, progress_callback)`: Batch categorization with progress
+
+**Features**:
+- Rate limiting (max 5 concurrent Gemini calls)
+- Retry logic (1 retry on failure)
+- POD validation against predefined list
+- Confidence scoring (binary: "confident" or "not confident")
+- Alternative POD suggestions when ambiguous
+- Comprehensive inline comments for code clarity
+
+**Categorization Output Structure**:
+```python
+{
+    "primary_pod": "Guidance",
+    "reasoning": "Based on synthesis, issue involves Smart Tips not displaying...",
+    "confidence": "confident",
+    "confidence_reason": "Clear synthesis match with no ambiguity between PODs",
+    "alternative_pods": ["WFE"],  # Or [] if none
+    "alternative_reasoning": "Could also be WFE due to element detection...",  # Or null
+    "metadata": {
+        "keywords_matched": ["Smart Tips", "preview mode", "display"],
+        "decision_factors": [
+            "Direct mention of Smart Tips in synthesis",
+            "Clear product functionality issue",
+            "Resolution involved product fix"
+        ]
+    }
+}
+```
+
+### POD Definitions
+
+13 PODs based on Whatfix product structure:
+
+1. **WFE (Workflow Engine)** - Element detection, CSS selectors, reselection, latching, visibility rules
+2. **Guidance** - Flows, Smart Tips, Pop-ups, Beacons, Launchers, Triggers, Blockers
+3. **CMM (Content & Metadata Management)** - Dashboard, CLM, P2P, Tags, Auto Testing
+4. **Hub** - DAP on OS, Self Help, Task List, Surveys, Content Repository
+5. **Analytics** - Dashboards, trends, funnels, KPIs, performance tracking
+6. **Insights** - Ask Whatfix AI, Cohorts, Event groups, User Journeys
+7. **Capture** - Autocapture, User Actions, User Attributes, User Identification
+8. **Mirror** - Application simulation, interactive training replicas
+9. **Desktop** - Native desktop app support (SAP GUI, Teams, Java)
+10. **Mobile** - iOS/Android deployments
+11. **Labs** - AI Assistant, AC reviewer, Intent Recognition, Enterprise Search
+12. **Platform Services** - Integration Hub (Confluence, Workday, Amplitude)
+13. **UI Platform** - Canary deployments
+
+### LLM Categorization Prompt
+
+**Anti-Hallucination Strategy**:
+- Explicit instruction to use ONLY synthesis data
+- Clear POD definitions with examples
+- Structured output format for parsing reliability
+- Confidence scoring to flag uncertain cases
+
+**Prompt Template** (stored in config.py):
+```
+You are a Whatfix support ticket categorization expert. Your task is to categorize
+a support ticket into ONE primary POD based on the ticket's synthesis summary and resolution.
+
+CRITICAL INSTRUCTIONS:
+- Base your decision ONLY on the synthesis summary and resolution provided
+- DO NOT invent or assume information NOT present in the synthesis
+- If the issue is ambiguous between multiple PODs, mark as "not confident"
+- DO NOT categorize based on subject/description alone - use the synthesis
+
+WHATFIX POD DEFINITIONS:
+[Comprehensive definitions for all 13 PODs with detailed feature mappings]
+
+CATEGORIZATION LOGIC:
+1. Read synthesis summary and resolution CAREFULLY & THOROUGHLY
+2. Identify key technical terms, features, modules mentioned
+3. Match to POD definitions above
+4. If issue spans multiple PODs, choose PRIMARY based on:
+   - What was the root cause?
+   - What area fixed the issue?
+   - Which POD "owns" the main functionality?
+5. If ambiguous between 2+ PODs, mark as "not confident"
+
+TICKET SYNTHESIS:
+Subject: {subject}
+Issue Reported: {issue_reported}
+Root Cause: {root_cause}
+Summary: {summary}
+Resolution: {resolution}
+
+CATEGORIZATION OUTPUT:
+[Structured format for parsing]
+```
+
+## Updated Workflow - 3 Phases
+
+**Phase 1: Fetch Tickets from Zendesk**
+- Fetch ticket metadata + all comments
+- Rate limiting: 10 concurrent requests
+- Output: Complete ticket data
+
+**Phase 2: Synthesize with Gemini**
+- Generate synthesis from ticket + comments
+- Rate limiting: 5 concurrent requests
+- Output: Issue, root cause, summary, resolution
+
+**Phase 3: Categorize into PODs (NEW)**
+- Use synthesis to determine primary POD
+- Rate limiting: 5 concurrent requests
+- Output: POD assignment + reasoning + confidence
+
+## Binary Confidence Scoring
+
+**"confident":**
+- Clear POD match based on synthesis
+- No ambiguity between multiple PODs
+- Resolution aligns with POD capabilities
+- Strong keyword matches from synthesis
+
+**"not confident":**
+- Ambiguous between 2+ PODs
+- Synthesis doesn't clearly map to any POD
+- Generic issue spanning multiple PODs
+- Weak or conflicting signals
+
+**Confidence Reason**: Single string explaining why the confidence level was assigned
+
+## Enhanced Output JSON Structure
+
+**Metadata Enhancements**:
+```json
+{
+  "metadata": {
+    "total_tickets": 10,
+    "successfully_processed": 8,
+    "synthesis_failed": 1,
+    "categorization_failed": 1,
+    "confidence_breakdown": {
+      "confident": 6,
+      "not_confident": 2
+    },
+    "pod_distribution": {
+      "WFE": 3,
+      "Guidance": 4,
+      "Hub": 1
+    },
+    "processed_at": "2025-05-10T14:32:30+05:30",
+    "processing_time_seconds": 45.2
+  }
+}
+```
+
+**Ticket Object Enhancement**:
+```json
+{
+  "ticket_id": "87239",
+  "serial_no": 2,
+  "subject": "...",
+  "synthesis": { ... },
+  "categorization": {
+    "primary_pod": "Guidance",
+    "reasoning": "Based on synthesis, the issue involves Smart Tips...",
+    "confidence": "confident",
+    "confidence_reason": "Clear synthesis match with no ambiguity",
+    "alternative_pods": [],
+    "alternative_reasoning": null,
+    "metadata": {
+      "keywords_matched": ["Smart Tips", "preview mode"],
+      "decision_factors": [
+        "Direct mention of Smart Tips in synthesis",
+        "Resolution involved Guidance module fix"
+      ]
+    }
+  },
+  "processing_status": "success"
+}
+```
+
+## CSV Input Format - Auto-Detection
+
+**Supported Formats**:
+
+**Format 1** (Phase 1 format):
+```csv
+Serial No,Ticket ID
+1,78788
+2,78969
+```
+
+**Format 2** (New format - auto-generate serial numbers):
+```csv
+Zendesk Tickets ID
+78788
+78969
+```
+
+**Auto-Detection Logic**:
+- Read CSV headers
+- If "Serial No" + "Ticket ID" columns exist → Format 1
+- If "Zendesk Tickets ID" column exists → Format 2 (auto-generate serial numbers)
+- Otherwise → Error with clear message
+
+## Technical Decisions - Phase 2
+
+### 1. Categorization Architecture
+
+**Decision**: Separate `categorizer.py` module (not integrated into `synthesizer.py`)
+
+**Rationale**:
+- **Separation of Concerns**: Synthesis and categorization are distinct operations
+- **Modularity**: Can test/improve categorization independently
+- **Reusability**: Can categorize pre-synthesized tickets without re-running synthesis
+- **Consistency**: Mirrors existing architecture (fetcher.py, synthesizer.py)
+
+### 2. Confidence Scoring System
+
+**Decision**: Binary scoring ("confident" vs "not confident") instead of 3-level
+
+**Rationale**:
+- **Actionability**: Clear decision - review or don't review
+- **Simplicity**: Easier for LLM to decide binary vs 3-way split
+- **Human Review**: "not confident" tickets escalated to humans
+- **Avoids Ambiguity**: No middle ground that might delay action
+
+### 3. LLM Prompt Design
+
+**Decision**: Condensed POD guide embedded in prompt (not RAG/semantic search)
+
+**Rationale**:
+- **Simplicity**: No additional vector DB infrastructure
+- **Consistency**: Same POD definitions for every categorization
+- **Cost-Effective**: Fits within Gemini token limits
+- **Deterministic**: Repeatable results for same synthesis
+
+### 4. Alternative PODs Handling
+
+**Decision**: Empty array `[]` when no alternatives, null for alternative_reasoning
+
+**Rationale**:
+- **JSON Compatibility**: Empty array is valid JSON, cleaner than null
+- **Frontend-Friendly**: Easy to check `.length === 0` in JavaScript
+- **Null for Reasoning**: Clearly indicates "not applicable" vs empty string
+
+### 5. Knowledge Base Injection
+
+**Decision**: Embed full POD definitions in every prompt
+
+**Rationale**:
+- **No Hallucination**: LLM has explicit definitions, can't invent PODs
+- **Context-Aware**: LLM sees full picture for each decision
+- **No External Dependencies**: Self-contained, no database needed
+
+## Code Quality Standards - Phase 2
+
+**Inline Comments**: Comprehensive comments explaining execution flow
+
+Example:
+```python
+async def categorize_ticket(self, ticket_data: Dict) -> Dict:
+    """
+    Categorize a synthesized ticket into a primary POD.
+
+    This is Phase 3 of the workflow. Takes synthesis from Phase 2
+    and uses LLM judgment to assign a POD with reasoning and confidence.
+
+    Args:
+        ticket_data: Ticket with completed synthesis
+
+    Returns:
+        Ticket data with categorization added
+    """
+    ticket_id = ticket_data.get('ticket_id', 'unknown')
+
+    # Rate limiting: Respect Gemini API limits (5 concurrent max)
+    async with self.semaphore:
+        self.logger.debug(f"Categorizing ticket {ticket_id}")
+
+        # Step 1: Extract synthesis for categorization
+        synthesis = ticket_data.get('synthesis', {})
+
+        # Step 2: Format prompt with POD definitions
+        prompt = self.format_categorization_prompt(ticket_data)
+
+        # Step 3: Call Gemini for categorization
+        # ... implementation
+```
+
+## Testing Strategy - Phase 2
+
+**Test Dataset**: First 10 tickets from `august_L1_tickets.csv`
+
+**Key Validation**:
+1. Tickets 87239 and 87249 correctly categorized as Guidance (not WFE)
+2. All categorizations have non-empty reasoning
+3. Confidence scores are accurate (no false "confident" for ambiguous cases)
+4. Alternative PODs suggested when appropriate
+5. No hallucinated POD names (validated against VALID_PODS)
+
+**Success Criteria**:
+- 100% of tickets processed without errors
+- Improved categorization accuracy vs keyword-based system
+- Clear, actionable reasoning for all categorizations
+- "not confident" flags genuinely ambiguous cases
+
+## Expected Terminal Output - Phase 2
+
+```
+╔══════════════════════════════════════════════════════════╗
+║   Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro  ║
+╚══════════════════════════════════════════════════════════╝
+
+Loading CSV: august_L1_tickets.csv
+✓ Found 10 tickets to process
+
+[PHASE 1] Fetching Ticket Data from Zendesk
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:10<00:00, 1.0 tickets/s]
+✓ Successfully fetched: 10 tickets
+
+[PHASE 2] Synthesizing with Gemini 2.5 Pro
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:25<00:00, 0.4 tickets/s]
+✓ Successfully synthesized: 10 tickets
+
+[PHASE 3] Categorizing into PODs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:20<00:00, 0.5 tickets/s]
+✓ Successfully categorized: 10 tickets
+   • Confident: 8 tickets
+   • Not Confident: 2 tickets
+
+Generating output JSON...
+
+╔════════════════════════ Summary ═════════════════════════╗
+║ Total Tickets:            10                             ║
+║ Successfully Processed:   10                             ║
+║ Failed:                    0                             ║
+║ Confidence Breakdown:                                    ║
+║   • Confident:             8                             ║
+║   • Not Confident:         2                             ║
+║ POD Distribution:                                        ║
+║   • WFE:                   3                             ║
+║   • Guidance:              5                             ║
+║   • Hub:                   2                             ║
+║ Total Time:             0m 55s                           ║
+║ Log File:    logs/app_20250510.log                      ║
+╚══════════════════════════════════════════════════════════╝
+
+✓ Output saved: output_20250510.json
+```
+
+## Implementation Checklist - Phase 2
+
+- [ ] Create feature branch: `feature/phase2-pod-categorization`
+- [ ] Update plan.md with Phase 2 documentation
+- [ ] Update config.py with categorization prompt and POD list
+- [ ] Implement categorizer.py with comprehensive comments
+- [ ] Update utils.py with POD/confidence validation functions
+- [ ] Update main.py:
+  - [ ] Add Phase 3 categorization workflow
+  - [ ] Add CSV auto-detection for both formats
+  - [ ] Update statistics (confidence, POD distribution)
+  - [ ] Update terminal output for 3 phases
+- [ ] Update README.md with Phase 2 features
+- [ ] Test with 10 tickets from august_L1_tickets.csv
+- [ ] Validate tickets 87239 and 87249 categorized correctly
+- [ ] Commit to feature branch
+- [ ] Merge to main after approval
+
+## Future Enhancements - Phase 3 (Web UI)
+
+Based on Phase 2 JSON output structure:
+
+1. **Review Interface**: Display synthesis + categorization for human review
+2. **Confidence Filtering**: Filter tickets by confidence level
+3. **POD Dashboard**: Visualize ticket distribution across PODs
+4. **Recategorization**: Allow manual POD override with audit trail
+5. **Bulk Actions**: Approve/reject multiple categorizations at once
+6. **Export**: Download filtered/reviewed tickets as CSV/Excel
+
+## Notes - Phase 2
+
+- POD definitions based on "Tag File - Tags and Definitions.csv"
+- Binary confidence scoring for actionability
+- LLM-based categorization to handle non-deterministic judgment calls
+- JSON structure designed for Phase 3 web UI reusability
+- All timestamps remain in IST (consistent with Phase 1)
+- Comprehensive inline comments for code maintainability

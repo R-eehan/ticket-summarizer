@@ -26,6 +26,7 @@ import config
 import utils
 from fetcher import ZendeskFetcher
 from synthesizer import GeminiSynthesizer
+from categorizer import TicketCategorizer
 
 
 class TicketSummarizer:
@@ -34,26 +35,46 @@ class TicketSummarizer:
     """
 
     def __init__(self):
-        """Initialize the summarizer with logger and components."""
+        """
+        Initialize the summarizer with logger and components.
+
+        Sets up:
+        - Logger for tracking all operations
+        - Console for rich terminal output
+        - Fetcher for Zendesk API calls (Phase 1)
+        - Synthesizer for LLM summarization (Phase 2)
+        - Categorizer for POD assignment (Phase 3) - NEW in Phase 2
+        - Statistics tracking for all three phases
+        """
         self.logger = utils.setup_logger("ticket_summarizer")
         self.console = Console()
         self.fetcher = ZendeskFetcher()
         self.synthesizer = GeminiSynthesizer()
+        self.categorizer = TicketCategorizer()  # Phase 2: POD categorization
 
-        # Statistics
+        # Statistics tracking for all phases
         self.stats = {
             "total_tickets": 0,
             "fetch_success": 0,
             "fetch_failed": 0,
             "synthesis_success": 0,
             "synthesis_failed": 0,
+            "categorization_success": 0,  # Phase 2: New stat
+            "categorization_failed": 0,  # Phase 2: New stat
+            "confident_count": 0,  # Phase 2: Confidence breakdown
+            "not_confident_count": 0,  # Phase 2: Confidence breakdown
+            "pod_distribution": {},  # Phase 2: POD counts
             "start_time": None,
             "end_time": None
         }
 
     def load_csv(self, csv_path: str) -> List[Tuple[int, str]]:
         """
-        Load ticket IDs from CSV file.
+        Load ticket IDs from CSV file with auto-detection of format.
+
+        Supports two CSV formats:
+        1. Format 1: "Serial No, Ticket ID" (Phase 1 format)
+        2. Format 2: "Zendesk Tickets ID" (Phase 2 format - auto-generates serial numbers)
 
         Args:
             csv_path: Path to input CSV file
@@ -63,7 +84,7 @@ class TicketSummarizer:
 
         Raises:
             FileNotFoundError: If CSV file doesn't exist
-            ValueError: If CSV format is invalid
+            ValueError: If CSV format is invalid or unrecognized
         """
         if not Path(csv_path).exists():
             raise FileNotFoundError(f"CSV file not found: {csv_path}")
@@ -73,18 +94,34 @@ class TicketSummarizer:
         with open(csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
 
-            # Validate headers
-            if 'Serial No' not in reader.fieldnames or 'Ticket ID' not in reader.fieldnames:
-                raise ValueError(
-                    "CSV must contain 'Serial No' and 'Ticket ID' columns. "
-                    f"Found: {reader.fieldnames}"
-                )
+            # Auto-detect CSV format based on headers
+            headers = reader.fieldnames
 
-            # Read ticket IDs
-            for row in reader:
-                serial_no = int(row['Serial No'])
-                ticket_id = str(row['Ticket ID']).strip()
-                ticket_ids.append((serial_no, ticket_id))
+            # Format 1: "Serial No, Ticket ID"
+            if 'Serial No' in headers and 'Ticket ID' in headers:
+                self.logger.info("Detected CSV Format 1: Serial No, Ticket ID")
+                for row in reader:
+                    serial_no = int(row['Serial No'])
+                    ticket_id = str(row['Ticket ID']).strip()
+                    ticket_ids.append((serial_no, ticket_id))
+
+            # Format 2: "Zendesk Tickets ID" (auto-generate serial numbers)
+            elif 'Zendesk Tickets ID' in headers:
+                self.logger.info("Detected CSV Format 2: Zendesk Tickets ID (auto-generating serial numbers)")
+                serial_no = 1
+                for row in reader:
+                    ticket_id = str(row['Zendesk Tickets ID']).strip()
+                    ticket_ids.append((serial_no, ticket_id))
+                    serial_no += 1
+
+            # Unsupported format
+            else:
+                raise ValueError(
+                    f"Unrecognized CSV format. Expected columns:\n"
+                    f"  Format 1: 'Serial No, Ticket ID'\n"
+                    f"  Format 2: 'Zendesk Tickets ID'\n"
+                    f"Found: {headers}"
+                )
 
         self.logger.info(f"Loaded {len(ticket_ids)} ticket IDs from {csv_path}")
         return ticket_ids
@@ -209,27 +246,143 @@ class TicketSummarizer:
 
         return synthesized_tickets
 
+    async def categorization_phase(self, tickets: List[dict]) -> List[dict]:
+        """
+        Phase 3: Categorize synthesized tickets into PODs.
+
+        This is the new phase added in Phase 2 of the project.
+        Takes synthesized tickets and assigns them to PODs using LLM-based
+        categorization with confidence scoring.
+
+        Args:
+            tickets: List of synthesized ticket dictionaries
+
+        Returns:
+            List of categorized ticket dictionaries
+        """
+        self.console.print("\n[bold cyan][PHASE 3] Categorizing into PODs[/bold cyan]")
+
+        # Filter tickets that were successfully synthesized
+        # Only categorize tickets with synthesis data
+        tickets_to_categorize = [
+            t for t in tickets
+            if t.get('processing_status') == 'success' and 'synthesis' in t
+        ]
+
+        if not tickets_to_categorize:
+            self.console.print("[yellow]⚠[/yellow] No tickets to categorize (all synthesis failed)")
+            return tickets
+
+        categorized_tickets = []
+
+        # Progress tracking with real-time updates
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=self.console
+        ) as progress:
+            task = progress.add_task(
+                "[cyan]Categorizing tickets...",
+                total=len(tickets_to_categorize)
+            )
+
+            def progress_callback(ticket_id: str, result: dict, success: bool):
+                """
+                Callback for progress updates during categorization.
+
+                Tracks:
+                - Success/failure counts
+                - Confidence breakdown (confident vs not confident)
+                - POD distribution
+                """
+                if success:
+                    self.stats['categorization_success'] += 1
+
+                    # Track confidence breakdown
+                    categorization = result.get('categorization', {})
+                    confidence = categorization.get('confidence', '')
+
+                    if confidence == 'confident':
+                        self.stats['confident_count'] += 1
+                    elif confidence == 'not confident':
+                        self.stats['not_confident_count'] += 1
+
+                    # Track POD distribution
+                    primary_pod = categorization.get('primary_pod', 'Unknown')
+                    if primary_pod:
+                        self.stats['pod_distribution'][primary_pod] = \
+                            self.stats['pod_distribution'].get(primary_pod, 0) + 1
+                else:
+                    self.stats['categorization_failed'] += 1
+
+                progress.update(task, advance=1)
+
+            # Categorize all tickets in parallel with rate limiting
+            categorized_tickets = await self.categorizer.categorize_multiple(
+                tickets,
+                progress_callback
+            )
+
+        # Display categorization results
+        self.console.print(
+            f"[green]✓[/green] Successfully categorized: {self.stats['categorization_success']} tickets"
+        )
+        if self.stats['confident_count'] > 0 or self.stats['not_confident_count'] > 0:
+            self.console.print(
+                f"   • Confident: {self.stats['confident_count']} tickets"
+            )
+            self.console.print(
+                f"   • Not Confident: {self.stats['not_confident_count']} tickets"
+            )
+        if self.stats['categorization_failed'] > 0:
+            self.console.print(
+                f"[red]✗[/red] Failed: {self.stats['categorization_failed']} tickets"
+            )
+
+        return categorized_tickets
+
     def generate_output(self, tickets: List[dict]) -> dict:
         """
-        Generate final output JSON structure.
+        Generate final output JSON structure with Phase 2 enhancements.
+
+        Includes:
+        - Phase 1 & 2 stats (fetch, synthesis)
+        - Phase 2 stats (categorization, confidence, POD distribution) - NEW
+        - All ticket data with synthesis and categorization
+        - Error tracking
 
         Args:
             tickets: List of processed ticket dictionaries
 
         Returns:
-            Complete output dictionary
+            Complete output dictionary with enhanced metadata
         """
         self.console.print("\n[cyan]Generating output JSON...[/cyan]")
 
         # Calculate processing time
         processing_time = self.stats['end_time'] - self.stats['start_time']
 
-        # Build output structure
+        # Build enhanced output structure with Phase 2 metadata
         output = {
             "metadata": {
                 "total_tickets": self.stats['total_tickets'],
-                "successfully_processed": self.stats['synthesis_success'],
-                "failed": self.stats['fetch_failed'] + self.stats['synthesis_failed'],
+                "successfully_processed": self.stats['categorization_success'],  # Phase 2: Updated
+                "synthesis_failed": self.stats['synthesis_failed'],  # Phase 2: New
+                "categorization_failed": self.stats['categorization_failed'],  # Phase 2: New
+                "failed": (
+                    self.stats['fetch_failed'] +
+                    self.stats['synthesis_failed'] +
+                    self.stats['categorization_failed']
+                ),
+                # Phase 2: Confidence breakdown
+                "confidence_breakdown": {
+                    "confident": self.stats['confident_count'],
+                    "not_confident": self.stats['not_confident_count']
+                },
+                # Phase 2: POD distribution
+                "pod_distribution": self.stats['pod_distribution'],
                 "processed_at": utils.get_current_ist_timestamp(),
                 "processing_time_seconds": round(processing_time, 2)
             },
@@ -274,7 +427,14 @@ class TicketSummarizer:
 
     def display_summary(self, output_filename: str):
         """
-        Display final summary to console.
+        Display final summary to console with Phase 2 enhancements.
+
+        Shows:
+        - Overall processing stats
+        - Confidence breakdown (Phase 2)
+        - POD distribution (Phase 2)
+        - Processing time
+        - Log file location
 
         Args:
             output_filename: Name of the output file
@@ -283,7 +443,7 @@ class TicketSummarizer:
         minutes = int(processing_time // 60)
         seconds = int(processing_time % 60)
 
-        # Create summary table
+        # Create summary table with Phase 2 stats
         table = Table(title="Summary", show_header=False, box=None)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="white")
@@ -291,12 +451,31 @@ class TicketSummarizer:
         table.add_row("Total Tickets:", str(self.stats['total_tickets']))
         table.add_row(
             "Successfully Processed:",
-            f"[green]{self.stats['synthesis_success']}[/green]"
+            f"[green]{self.stats['categorization_success']}[/green]"
         )
         table.add_row(
             "Failed:",
-            f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed']}[/red]"
+            f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed'] + self.stats['categorization_failed']}[/red]"
         )
+
+        # Phase 2: Confidence breakdown
+        if self.stats['confident_count'] > 0 or self.stats['not_confident_count'] > 0:
+            table.add_row("Confidence Breakdown:", "")
+            table.add_row(
+                "  • Confident:",
+                f"[green]{self.stats['confident_count']}[/green]"
+            )
+            table.add_row(
+                "  • Not Confident:",
+                f"[yellow]{self.stats['not_confident_count']}[/yellow]"
+            )
+
+        # Phase 2: POD distribution
+        if self.stats['pod_distribution']:
+            table.add_row("POD Distribution:", "")
+            for pod, count in sorted(self.stats['pod_distribution'].items()):
+                table.add_row(f"  • {pod}:", str(count))
+
         table.add_row("Total Time:", f"{minutes}m {seconds}s")
         table.add_row("Log File:", f"logs/app_{datetime.now().strftime('%Y%m%d')}.log")
 
@@ -331,17 +510,20 @@ class TicketSummarizer:
             self.stats['total_tickets'] = len(ticket_ids)
             self.console.print(f"[green]✓[/green] Found {len(ticket_ids)} tickets to process")
 
-            # Phase 1: Fetch tickets
+            # Phase 1: Fetch tickets from Zendesk
             fetched_tickets = await self.fetch_phase(ticket_ids)
 
-            # Phase 2: Synthesize tickets
+            # Phase 2: Synthesize tickets using Gemini LLM
             synthesized_tickets = await self.synthesis_phase(fetched_tickets)
+
+            # Phase 3: Categorize tickets into PODs (NEW in Phase 2)
+            categorized_tickets = await self.categorization_phase(synthesized_tickets)
 
             # End timer
             self.stats['end_time'] = time.time()
 
-            # Generate output
-            output = self.generate_output(synthesized_tickets)
+            # Generate output with Phase 2 enhancements
+            output = self.generate_output(categorized_tickets)
 
             # Save output
             output_filename = self.save_output(output)

@@ -1,17 +1,28 @@
 # Zendesk Ticket Summarizer
 
-A terminal-based application that fetches Zendesk support tickets and uses Google Gemini 2.5 Pro to generate comprehensive summaries for product area attribution.
+A terminal-based application that fetches Zendesk support tickets, uses Google Gemini 2.5 Pro to generate comprehensive summaries, and automatically categorizes tickets into PODs (Product Organizational Domains) for product area attribution.
 
 ## Features
 
+### Phase 1: Ticket Fetching & Synthesis
 - Fetches complete ticket data from Zendesk (subject, description, all comments)
 - Uses Gemini 2.5 Pro LLM to synthesize:
   - Issue reported (one-liner)
   - Root cause (one-liner)
   - Summary (3-4 line paragraph)
   - Resolution (one-liner)
-- Parallel processing with rate limiting for optimal performance
-- Real-time progress tracking in terminal
+
+### Phase 2: POD Categorization (NEW)
+- Automatically categorizes tickets into 13 PODs using LLM-based analysis
+- Provides clear reasoning for each categorization decision
+- Binary confidence scoring ("confident" vs "not confident") for human review
+- Suggests alternative PODs when ambiguous
+- Tracks POD distribution and confidence breakdown
+
+### General Features
+- 3-phase parallel processing with rate limiting for optimal performance
+- Real-time progress tracking for all phases in terminal
+- CSV auto-detection (supports multiple input formats)
 - Comprehensive error handling and logging
 - IST (Indian Standard Time) timestamp conversion
 - JSON output optimized for future web application integration
@@ -71,8 +82,9 @@ python main.py input_tickets_sample.csv
 
 ### Input CSV Format
 
-Your CSV file must contain two columns with headers:
+The application auto-detects and supports two CSV formats:
 
+**Format 1:** Serial No + Ticket ID
 ```csv
 Serial No,Ticket ID
 1,78788
@@ -81,8 +93,16 @@ Serial No,Ticket ID
 ...
 ```
 
-- **Serial No**: Sequential number for each ticket
-- **Ticket ID**: Zendesk ticket ID (numeric)
+**Format 2:** Zendesk Tickets ID (auto-generates serial numbers)
+```csv
+Zendesk Tickets ID
+78788
+78969
+78985
+...
+```
+
+The application will automatically detect which format you're using and process accordingly.
 
 ### Output
 
@@ -91,19 +111,30 @@ The application generates a timestamped JSON file (e.g., `output_20250510.json`)
 ```json
 {
   "metadata": {
-    "total_tickets": 100,
-    "successfully_processed": 96,
-    "failed": 4,
+    "total_tickets": 10,
+    "successfully_processed": 8,
+    "synthesis_failed": 1,
+    "categorization_failed": 1,
+    "failed": 2,
+    "confidence_breakdown": {
+      "confident": 6,
+      "not_confident": 2
+    },
+    "pod_distribution": {
+      "WFE": 3,
+      "Guidance": 4,
+      "Hub": 1
+    },
     "processed_at": "2025-05-10T14:32:30+05:30",
-    "processing_time_seconds": 136.5
+    "processing_time_seconds": 45.2
   },
   "tickets": [
     {
-      "ticket_id": "78788",
-      "serial_no": 1,
+      "ticket_id": "87239",
+      "serial_no": 2,
       "subject": "Smart tip not displaying...",
       "description": "Hi, I added a smart tip...",
-      "url": "https://whatfix.zendesk.com/agent/tickets/78788",
+      "url": "https://whatfix.zendesk.com/agent/tickets/87239",
       "status": "solved",
       "created_at": "2025-05-01T07:47:00+05:30",
       "updated_at": "2025-05-02T10:15:00+05:30",
@@ -115,6 +146,21 @@ The application generates a timestamped JSON file (e.g., `output_20250510.json`)
         "summary": "Customer reported a smart tip that wouldn't display...",
         "resolution": "Reselected smart tip and added necessary CSS selector"
       },
+      "categorization": {
+        "primary_pod": "Guidance",
+        "reasoning": "The issue involves Smart Tips, which are explicitly a Guidance module feature...",
+        "confidence": "confident",
+        "confidence_reason": "Clear synthesis match with no ambiguity between PODs",
+        "alternative_pods": [],
+        "alternative_reasoning": null,
+        "metadata": {
+          "keywords_matched": ["Smart Tips", "preview mode", "display"],
+          "decision_factors": [
+            "Direct mention of Smart Tips in synthesis",
+            "Resolution involved Guidance module fix"
+          ]
+        }
+      },
       "processing_status": "success"
     }
   ],
@@ -124,36 +170,56 @@ The application generates a timestamped JSON file (e.g., `output_20250510.json`)
 
 ## Terminal Output
 
-The application provides rich terminal output with progress tracking:
+The application provides rich terminal output with progress tracking for all 3 phases:
 
 ```
 ╔══════════════════════════════════════════════════════════╗
 ║   Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro  ║
 ╚══════════════════════════════════════════════════════════╝
 
-Loading CSV: input_tickets.csv
-✓ Found 5 tickets to process
+Loading CSV: august_L1_tickets.csv
+✓ Found 10 tickets to process
 
 [PHASE 1] Fetching Ticket Data from Zendesk
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5/5 [00:05<00:00, 1.0 tickets/s]
-✓ Successfully fetched: 5 tickets
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:10<00:00, 1.0 tickets/s]
+✓ Successfully fetched: 10 tickets
 
 [PHASE 2] Synthesizing with Gemini 2.5 Pro
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5/5 [00:15<00:00, 0.3 tickets/s]
-✓ Successfully synthesized: 5 tickets
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:25<00:00, 0.4 tickets/s]
+✓ Successfully synthesized: 10 tickets
+
+[PHASE 3] Categorizing into PODs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:20<00:00, 0.5 tickets/s]
+✓ Successfully categorized: 10 tickets
+   • Confident: 8 tickets
+   • Not Confident: 2 tickets
 
 Generating output JSON...
 
 ╔════════════════════════ Summary ═════════════════════════╗
-║ Total Tickets:             5                             ║
-║ Successfully Processed:    5                             ║
-║ Failed:                    0                             ║
-║ Total Time:             0m 23s                           ║
+║ Total Tickets:            10                             ║
+║ Successfully Processed:    8                             ║
+║ Failed:                    2                             ║
+║ Confidence Breakdown:                                    ║
+║   • Confident:             8                             ║
+║   • Not Confident:         2                             ║
+║ POD Distribution:                                        ║
+║   • Guidance:              5                             ║
+║   • Hub:                   2                             ║
+║   • WFE:                   3                             ║
+║ Total Time:             0m 55s                           ║
 ║ Log File:    logs/app_20250510.log                      ║
 ╚══════════════════════════════════════════════════════════╝
 
 ✓ Output saved: output_20250510.json
 ```
+
+### Understanding Confidence Scores
+
+- **Confident**: The LLM clearly identified a single POD with strong evidence from the synthesis
+- **Not Confident**: The issue is ambiguous between multiple PODs or lacks clear categorization signals
+
+Tickets marked "Not Confident" should be reviewed by a human for accurate categorization.
 
 ## Logs
 

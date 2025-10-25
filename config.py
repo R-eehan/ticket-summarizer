@@ -36,7 +36,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable is not set")
 
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+GEMINI_MODEL = "gemini-flash-latest"
 
 # ============================================================================
 # RATE LIMITING CONFIGURATION
@@ -112,3 +112,163 @@ TIMEZONE_IST = "Asia/Kolkata"
 
 OUTPUT_FILENAME_PREFIX = "output_"
 OUTPUT_DATE_FORMAT = "%Y%m%d"  # Format: output_20250510.json
+
+# ============================================================================
+# POD CATEGORIZATION CONFIGURATION (Phase 2)
+# ============================================================================
+
+# List of valid PODs for validation
+VALID_PODS = [
+    "WFE",
+    "Guidance",
+    "CMM",
+    "Hub",
+    "Analytics",
+    "Insights",
+    "Capture",
+    "Mirror",
+    "Desktop",
+    "Mobile",
+    "Labs",
+    "Platform Services",
+    "UI Platform"
+]
+
+# Confidence levels for categorization
+CONFIDENCE_LEVELS = ["confident", "not confident"]
+
+# POD Categorization Prompt Template
+CATEGORIZATION_PROMPT_TEMPLATE = """You are a Whatfix support ticket categorization expert. Your task is to categorize a support ticket into ONE primary POD based on the ticket's synthesis summary and resolution.
+
+CRITICAL INSTRUCTIONS:
+- Base your decision ONLY on the synthesis summary and resolution provided
+- DO NOT invent or assume information NOT present in the synthesis
+- If the issue is ambiguous between multiple PODs, mark as "not confident"
+- DO NOT categorize based on subject/description alone - use the synthesis which captures the full conversation
+
+WHATFIX POD DEFINITIONS:
+
+1. **WFE (Workflow Engine)**
+Synthesis summary + resolution represents:
+   - Element Detection, CSS selectors, XPath issues
+   - Reselection requests
+   - Latching problems (widgets, tooltips, smart tips, beacons, user actions, launchers, blockers not anchoring correctly)
+   - Smart context issues (page specific context issues, content not being visible on one page or appearing on unexpected pages)
+   - Visibility Rules
+   - Diagnostics
+   - Automation of steps - appearance, logic not working, automated execution not working
+
+2. **Guidance**
+Synthesis summary + resolution represents:
+   - Flows (step-by-step walkthroughs); issues with building them, building branches, theme related issues, step completion rules, lack of understanding of when & how to use them, tool-tip positioning options & difficulties
+   - Smart Tips (contextual tooltips); issues with building them, theme related issues, step completion rules, lack of understanding of when & how to use them, tool-tip positioning options & difficulties
+   - Pop-ups (modals/announcements); issues with building them, theme related issues, lack of understanding of how to use, what precedence means, what sequencing means, how to link content, etc
+   - Beacons (visual elements to grab attention); issues with building them, theme related issues, step completion rules, lack of understanding of when& how to use them, tool-tip positioning options & difficulties
+   - Launchers (persistent buttons); issues with building them, theme related issues, step completion rules, lack of understanding of when& how to use them, tool-tip positioning options & difficulties
+   - Triggers (auto-firing content); issues with building them, theme related issues, step completion rules, lack of understanding of when& how to use them, tool-tip positioning options & difficulties
+   - Blockers (preventing progress); issues with building them, theme related issues, step completion rules, lack of understanding of when& how to use them, tool-tip positioning options & difficulties
+   - Branching (conditional paths); issues with building them, theme related issues, step completion rules, lack of understanding of when& how to use them, tool-tip positioning options & difficulties
+   - Multiformat exports
+
+3. **CMM (Content & Metadata Management)**
+   - Dashboard/Studio navigation
+   - CLM (Content Lifecycle Management)
+   - P2P (Push to Production)
+   - Tags management
+   - Auto Testing
+   - Auto Translations
+   - Versioning
+
+4. **Hub**
+   - DAP on OS (desktop widget)
+   - Self Help / Task List
+   - Surveys
+   - Content Repository integration
+   - Content Aggregation
+   - QuickRead (AI summaries)
+   - Static Content
+   - Nudges
+
+5. **Analytics**
+   - Product analytics dashboards
+   - Trends, funnels, user journeys
+   - KPIs, charts, performance tracking
+
+6. **Insights**
+   - Ask Whatfix AI (NLP queries)
+   - Cohorts
+   - Event groups
+   - User Journeys
+   - Enterprise Insights
+
+7. **Capture**
+   - Autocapture (tracking interactions)
+   - User Actions (custom events)
+   - User Attributes (metadata)
+   - User Identification
+   - User Unification
+   - Reserved Variables
+
+8. **Mirror**
+   - Application simulation builder
+   - Interactive training replicas
+
+9. **Desktop**
+   - Native desktop app support (SAP GUI, Teams, Java apps)
+
+10. **Mobile**
+    - iOS/Android deployments
+
+11. **Labs**
+    - AI Assistant
+    - AC reviewer
+    - Intent Recognition
+    - Enterprise Search
+
+12. **Platform Services**
+    - Integration Hub (Confluence, Workday, Amplitude)
+
+13. **UI Platform**
+    - Canary deployments
+
+CATEGORIZATION LOGIC:
+1. Read the synthesis summary and resolution CAREFULLY & THOROUGHLY
+2. Identify key technical terms, features, or modules mentioned
+3. Match these to the POD definitions above
+4. If the issue spans multiple PODs, choose the PRIMARY one based on:
+   - What was the root cause?
+   - What area fixed the issue?
+   - Which POD "owns" the main functionality involved?
+5. If ambiguous between 2+ PODs, mark confidence as "not confident"
+
+TICKET SYNTHESIS:
+Subject: {subject}
+
+Issue Reported: {issue_reported}
+
+Root Cause: {root_cause}
+
+Summary: {summary}
+
+Resolution: {resolution}
+
+CATEGORIZATION OUTPUT:
+Provide your categorization in this EXACT format:
+
+**Primary POD:**
+[One of: WFE, Guidance, CMM, Hub, Analytics, Insights, Capture, Mirror, Desktop, Mobile, Labs, Platform Services, UI Platform]
+
+**Reasoning:**
+[2-3 sentences explaining why this POD was chosen based on the synthesis]
+
+**Confidence:**
+[Either "confident" or "not confident"]
+
+**Confidence Reason:**
+[Single sentence explaining why this confidence level was assigned]
+
+**Alternative PODs:**
+[Comma-separated list of other PODs this could belong to, or "None" if no alternatives]
+
+**Alternative Reasoning:**
+[1-2 sentences explaining why alternatives were considered, or "N/A" if no alternatives]"""

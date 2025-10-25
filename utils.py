@@ -302,3 +302,77 @@ def generate_output_filename() -> str:
     """
     date_str = datetime.now().strftime(config.OUTPUT_DATE_FORMAT)
     return f"{config.OUTPUT_FILENAME_PREFIX}{date_str}.json"
+
+
+# ============================================================================
+# CATEGORIZATION VALIDATION UTILITIES (Phase 2)
+# ============================================================================
+
+def validate_pod(pod_name: str) -> bool:
+    """
+    Validate POD name against the list of valid PODs.
+
+    Used by categorizer to ensure LLM doesn't hallucinate POD names.
+    Performs case-insensitive matching for robustness.
+
+    Args:
+        pod_name: POD name to validate (e.g., "Guidance", "WFE")
+
+    Returns:
+        True if POD name is valid, False otherwise
+
+    Example:
+        >>> validate_pod("Guidance")
+        True
+        >>> validate_pod("Invalid POD")
+        False
+        >>> validate_pod("guidance")  # Case insensitive
+        True
+    """
+    if not pod_name:
+        return False
+
+    # Case-insensitive check against valid PODs list
+    # Normalize both the input and the list for comparison
+    pod_name_normalized = pod_name.strip()
+
+    # Check exact match first (most common case)
+    if pod_name_normalized in config.VALID_PODS:
+        return True
+
+    # Check case-insensitive match
+    pod_name_lower = pod_name_normalized.lower()
+    valid_pods_lower = [p.lower() for p in config.VALID_PODS]
+
+    return pod_name_lower in valid_pods_lower
+
+
+def validate_confidence(confidence: str) -> bool:
+    """
+    Validate confidence level against allowed values.
+
+    Ensures LLM response contains valid confidence level.
+    Only two levels allowed: "confident" or "not confident"
+
+    Args:
+        confidence: Confidence level string from LLM
+
+    Returns:
+        True if confidence is valid, False otherwise
+
+    Example:
+        >>> validate_confidence("confident")
+        True
+        >>> validate_confidence("not confident")
+        True
+        >>> validate_confidence("very confident")
+        False
+    """
+    if not confidence:
+        return False
+
+    # Case-insensitive check against valid confidence levels
+    confidence_normalized = confidence.strip().lower()
+    valid_levels_lower = [c.lower() for c in config.CONFIDENCE_LEVELS]
+
+    return confidence_normalized in valid_levels_lower
