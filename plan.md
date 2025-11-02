@@ -872,22 +872,412 @@ Generating output JSON...
 - [ ] Commit to feature branch
 - [ ] Merge to main after approval
 
-## Future Enhancements - Phase 3 (Web UI)
+## Phase 3b: Diagnostics Analysis Feature
 
-Based on Phase 2 JSON output structure:
+### Overview
 
-1. **Review Interface**: Display synthesis + categorization for human review
+Phase 3b introduces an independent analysis capability that evaluates whether Whatfix's **Diagnostics** feature was used or could have helped resolve/diagnose reported issues in support tickets.
+
+This feature runs **independently** or **in parallel** with POD categorization, allowing users to choose:
+- POD categorization only (`--analysis-type pod`)
+- Diagnostics analysis only (`--analysis-type diagnostics`)
+- Both analyses in parallel (`--analysis-type both`)
+
+### Problem Statement
+
+> "Product team needs to understand if Diagnostics feature is being utilized effectively and identify missed opportunities where Diagnostics could have prevented support tickets or enabled self-service resolution."
+
+**Current Challenges**:
+- Zendesk custom field "Was Diagnostic Panel used?" is often unreliable (incomplete, NA, or inaccurate)
+- No systematic way to assess if Diagnostics COULD have helped (even when not used)
+- Manual ticket review is time-consuming and doesn't scale
+- Difficult to quantify Diagnostics' impact on support cost reduction
+
+### Solution
+
+Build an **LLM-powered Diagnostics analyzer** that:
+1. Reads Zendesk custom field "Was Diagnostic Panel used?" (ID: 41001255923353)
+2. Analyzes ticket synthesis to determine if Diagnostics was ACTUALLY used
+3. Evaluates if Diagnostics COULD have helped resolve/diagnose the issue
+4. Provides ternary assessment ("yes", "no", "maybe") with confidence scoring
+5. Outputs structured JSON with reasoning for Product Manager review
+
+### Updated Architecture - Branching Design
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  ORCHESTRATOR (main.py)                           │
+│      CLI, --analysis-type parameter, progress, JSON generation    │
+└──────┬──────────────────┬──────────────────┬─────────────────────┘
+       │                  │                  │
+   ┌───▼────┐      ┌──────▼──────┐   ┌──────▼──────────────────────┐
+   │FETCHER │      │SYNTHESIZER  │   │   ANALYSIS BRANCH           │
+   │        │      │             │   │  (based on user input)      │
+   │Phase 1 │      │  Phase 2    │   │                             │
+   │        │      │             │   │  ┌─────────────────┐        │
+   │+ custom│      │             │   │  │ POD Categorizer │        │
+   │ fields │      │             │   │  │ (categorizer.py)│        │
+   └────────┘      └─────────────┘   │  └─────────────────┘        │
+                                     │          OR                  │
+                                     │  ┌─────────────────┐        │
+                                     │  │ Diagnostics     │        │
+                                     │  │ Analyzer (NEW)  │        │
+                                     │  │ (diagnostics_   │        │
+                                     │  │  analyzer.py)   │        │
+                                     │  └─────────────────┘        │
+                                     │         OR                   │
+                                     │  ┌─────────────────┐        │
+                                     │  │  BOTH (PARALLEL)│        │
+                                     │  │  POD + Diag     │        │
+                                     │  └─────────────────┘        │
+                                     └─────────────────────────────┘
+```
+
+### Updated File Structure - Phase 3b
+
+```
+ticket-summarizer/
+├── plan.md                      # This file (UPDATED)
+├── README.md                    # Setup & usage (UPDATED)
+├── requirements.txt             # Dependencies (no change)
+├── main.py                      # Orchestrator (UPDATED - branching logic)
+├── config.py                    # Config (UPDATED - diagnostics prompt)
+├── utils.py                     # Utilities (UPDATED - validation)
+├── fetcher.py                   # Zendesk API (UPDATED - custom fields)
+├── synthesizer.py               # Gemini synthesizer
+├── categorizer.py               # POD categorization
+├── diagnostics_analyzer.py      # Diagnostics analysis (NEW)
+├── Whatfix_pod_context.md       # POD definitions reference
+├── diagnostics_summary.md       # Diagnostics feature context (NEW)
+└── logs/
+```
+
+### Module Updates - Phase 3b
+
+#### 1. fetcher.py - UPDATED (Custom Fields Support)
+
+**New Functionality**:
+- Fetch custom fields from Zendesk API (no extra query params needed)
+- Parse custom field ID `41001255923353` ("Was Diagnostic Panel used?")
+- Normalize custom field value using `utils.normalize_diagnostics_field()`
+
+**New Method**:
+```python
+def _parse_custom_fields(self, ticket_data: Dict) -> Dict:
+    """Extract and normalize 'Was Diagnostics used?' custom field"""
+    # Normalizes: "Yes"/"No"/"NA"/null → "yes"/"no"/"unknown"
+```
+
+**Updated Ticket Structure**:
+```python
+{
+    "ticket_id": "89618",
+    "custom_fields": {
+        "was_diagnostics_used": "no"  # Normalized value
+    },
+    ...
+}
+```
+
+#### 2. diagnostics_analyzer.py - NEW MODULE
+
+**Purpose**: Analyze tickets for Diagnostics feature applicability
+
+**Class**: `DiagnosticsAnalyzer`
+
+**Key Methods**:
+- `analyze_ticket(ticket_data)`: Analyze single ticket
+- `format_diagnostics_prompt(...)`: Format prompt with ticket synthesis
+- `parse_diagnostics_response(response_text)`: Parse LLM JSON response
+- `validate_analysis_structure(analysis_data)`: Validate response structure
+- `analyze_multiple(tickets, progress_callback)`: Batch analysis with progress
+
+**LLM Prompt Design**:
+- Embeds Diagnostics capabilities (what it CAN and CANNOT do)
+- Provides ticket synthesis + custom field value
+- Requests ternary assessment with confidence and reasoning
+- Includes 2 examples (89618: could help, 88591: could NOT help)
+
+**Output Structure**:
+```json
+{
+  "was_diagnostics_used": {
+    "custom_field_value": "no",
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "..."
+  },
+  "could_diagnostics_help": {
+    "assessment": "yes",
+    "confidence": "confident",
+    "reasoning": "...",
+    "diagnostics_capability_matched": ["Visibility rule evaluation"],
+    "limitation_notes": null
+  },
+  "metadata": {
+    "ticket_type": "troubleshooting",
+    "analysis_timestamp": "2025-11-02T14:30:15+05:30"
+  }
+}
+```
+
+#### 3. config.py - UPDATED
+
+**New Constants**:
+```python
+DIAGNOSTICS_CUSTOM_FIELD_ID = 41001255923353  # Zendesk field ID
+```
+
+**New Prompt**:
+- `DIAGNOSTICS_ANALYSIS_PROMPT`: Comprehensive LLM prompt template
+- Diagnostics capabilities (CAN: visibility rules, element detection, CSS failures)
+- Diagnostics limitations (CANNOT: selector generation, feature requests, product knowledge)
+- Two-step analysis logic (was used? / could help?)
+- JSON output structure with examples
+
+#### 4. utils.py - UPDATED
+
+**New Functions**:
+```python
+def normalize_diagnostics_field(raw_value: Optional[str]) -> str:
+    """Normalize custom field: 'Yes'/'No'/'NA'/null → 'yes'/'no'/'unknown'"""
+
+def validate_diagnostics_assessment(assessment: str) -> bool:
+    """Validate assessment: 'yes', 'no', or 'maybe'"""
+
+def validate_diagnostics_usage(usage: str) -> bool:
+    """Validate usage: 'yes', 'no', or 'unknown'"""
+```
+
+#### 5. main.py - UPDATED (Branching Logic)
+
+**New CLI Parameter**:
+```bash
+--analysis-type {pod,diagnostics,both}
+```
+
+**Updated Workflow**:
+```python
+# Phase 1: Fetch (with custom fields)
+# Phase 2: Synthesize
+# Phase 3: Branch based on --analysis-type
+if analysis_type == "pod":
+    categorized_tickets = await categorization_phase(synthesized_tickets)
+elif analysis_type == "diagnostics":
+    analyzed_tickets = await diagnostics_phase(synthesized_tickets)
+elif analysis_type == "both":
+    # Run POD + Diagnostics in PARALLEL
+    categorized, analyzed = await asyncio.gather(
+        categorization_phase(synthesized_tickets),
+        diagnostics_phase(synthesized_tickets)
+    )
+```
+
+**New Statistics Tracking**:
+```python
+"diagnostics_analysis_success": 0,
+"diagnostics_analysis_failed": 0,
+"diagnostics_was_used": {"yes": 0, "no": 0, "unknown": 0},
+"diagnostics_could_help": {"yes": 0, "no": 0, "maybe": 0},
+"diagnostics_confidence": {"confident": 0, "not_confident": 0}
+```
+
+### Output Files - Phase 3b
+
+#### Diagnostics Analysis Output: `output_diagnostics_YYYYMMDD_HHMMSS.json`
+
+```json
+{
+  "metadata": {
+    "analysis_type": "diagnostics",
+    "total_tickets": 10,
+    "successfully_processed": 9,
+    "failed": 1,
+    "diagnostics_breakdown": {
+      "was_used": {"yes": 2, "no": 6, "unknown": 1},
+      "could_help": {"yes": 5, "no": 3, "maybe": 1},
+      "confidence": {"confident": 7, "not_confident": 2}
+    },
+    "processed_at": "2025-11-02T14:30:00+05:30",
+    "processing_time_seconds": 45.2
+  },
+  "tickets": [
+    {
+      "ticket_id": "89618",
+      "subject": "Blocker Role Tags Setup",
+      "url": "https://whatfix.zendesk.com/agent/tickets/89618",
+      "synthesis": { ... },
+      "diagnostics_analysis": { ... },
+      "processing_status": "success"
+    }
+  ],
+  "errors": []
+}
+```
+
+#### When `--analysis-type both`: Two Separate Files
+
+- `output_pod_YYYYMMDD_HHMMSS.json` (POD categorization)
+- `output_diagnostics_YYYYMMDD_HHMMSS.json` (Diagnostics analysis)
+
+Both files generated in parallel with combined metadata.
+
+### Usage Examples - Phase 3b
+
+```bash
+# POD categorization only (Phase 3a)
+python main.py --input tickets.csv --analysis-type pod
+
+# Diagnostics analysis only (Phase 3b)
+python main.py --input tickets.csv --analysis-type diagnostics
+
+# Both analyses in parallel (Phase 3a + 3b)
+python main.py --input tickets.csv --analysis-type both
+```
+
+### Expected Terminal Output - Phase 3b (Diagnostics Mode)
+
+```
+╔══════════════════════════════════════════════════════════╗
+║   Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro  ║
+╚══════════════════════════════════════════════════════════╝
+
+Analysis Type: DIAGNOSTICS
+Loading CSV: diagnostics_support_tickets_q3.csv
+✓ Found 10 tickets to process
+
+[PHASE 1] Fetching Ticket Data from Zendesk (with custom fields)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:10<00:00, 1.0 tickets/s]
+✓ Successfully fetched: 10 tickets
+
+[PHASE 2] Synthesizing with Gemini 2.5 Pro
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:25<00:00, 0.4 tickets/s]
+✓ Successfully synthesized: 10 tickets
+
+[PHASE 3b] Analyzing Diagnostics Applicability
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10/10 [00:20<00:00, 0.5 tickets/s]
+✓ Successfully analyzed: 10 tickets
+   • Confident: 8 tickets
+   • Not Confident: 2 tickets
+
+Generating output JSON...
+
+╔════════════════════════ Summary ═════════════════════════╗
+║ Analysis Type:          DIAGNOSTICS                      ║
+║ Total Tickets:          10                               ║
+║ Successfully Processed: 10                               ║
+║ Failed:                 0                                ║
+║                                                          ║
+║ Was Diagnostics Used?                                    ║
+║   • Yes:                2                                ║
+║   • No:                 7                                ║
+║   • Unknown:            1                                ║
+║                                                          ║
+║ Could Diagnostics Help?                                  ║
+║   • Yes:                5                                ║
+║   • No:                 3                                ║
+║   • Maybe:              2                                ║
+║                                                          ║
+║ Confidence:                                              ║
+║   • Confident:          8                                ║
+║   • Not Confident:      2                                ║
+║                                                          ║
+║ Total Time:             0m 55s                           ║
+║ Log File:               logs/app_20251102.log            ║
+╚══════════════════════════════════════════════════════════╝
+
+✓ Output saved: output_diagnostics_20251102_143045.json
+```
+
+### Implementation Checklist - Phase 3b
+
+- [x] Create feature branch: `feature/phase3b-diagnostics-analysis`
+- [x] Update fetcher.py to fetch custom fields from Zendesk API
+- [x] Create diagnostics_analyzer.py module with DiagnosticsAnalyzer class
+- [x] Update config.py with Diagnostics prompt and constants
+- [x] Update utils.py with diagnostics-specific utilities
+- [x] Update main.py with branching logic and --analysis-type parameter
+- [x] Commit all code changes to feature branch
+- [ ] Update plan.md with Phase 3b details
+- [ ] Update README.md with diagnostics analysis documentation
+- [ ] Test diagnostics analysis with sample tickets
+- [ ] Validate Example 1 (ticket 89618) and Example 2 (ticket 88591)
+- [ ] Merge to main after approval
+
+### Key Design Decisions - Phase 3b
+
+1. **Independent Branching Architecture**
+   - POD categorization and Diagnostics analysis are independent
+   - Users choose which analysis to run via `--analysis-type`
+   - "both" mode runs analyses in parallel using `asyncio.gather()`
+
+2. **Custom Field Handling**
+   - Custom field fetched with ticket data (no extra API calls)
+   - Normalized to prevent LLM confusion ("Yes"/"yes"/"YES" → "yes")
+   - Used as input to LLM but not blindly trusted (LLM validates against synthesis)
+
+3. **Ternary Classification**
+   - "Could Diagnostics help?" uses "yes"/"no"/"maybe" instead of binary
+   - Allows LLM to express uncertainty for ambiguous cases
+   - "maybe" + "not confident" = clear signal for manual review
+
+4. **Separate Output Files**
+   - Different analysis types have different metadata needs
+   - Easier to consume independently for different stakeholders
+   - Clear separation of concerns
+
+5. **LLM Prompt Validation Gate**
+   - Diagnostics prompt reviewed and approved by Product Manager (Reehan)
+   - Includes explicit capabilities/limitations to reduce hallucination
+   - Two concrete examples anchor the LLM's decision-making
+
+### Risk Mitigation - Phase 3b
+
+| Risk | Mitigation |
+|------|------------|
+| LLM hallucinates Diagnostics capabilities | Embedded explicit capability list in prompt; validated against known features |
+| Custom field unreliable | LLM cross-references with synthesis; discrepancies explained in reasoning |
+| Ambiguous tickets force incorrect binary | Use "maybe" + "not confident" for unclear cases |
+| Prompt too complex | Product Manager approved prompt before implementation |
+| Parallel execution causes rate limits | Both use same 5-concurrent semaphore (total 10 safe for Gemini) |
+
+### Success Criteria - Phase 3b
+
+1. **Functional**:
+   - 100% of tickets processed without errors
+   - Valid JSON output matching spec
+   - Custom fields correctly fetched and normalized
+
+2. **Quality**:
+   - Ticket 89618: Correctly assessed as "could_help: yes" (visibility rule failure)
+   - Ticket 88591: Correctly assessed as "could_help: no" (selector construction request)
+   - No hallucinated Diagnostics capabilities
+   - "maybe" used appropriately for genuinely ambiguous cases
+
+3. **Performance**:
+   - Parallel execution (both mode) completes faster than sequential
+   - No rate limit errors from Gemini API
+   - Comparable processing time to POD categorization alone
+
+## Future Enhancements - Phase 4 (Web UI)
+
+Based on Phase 2 & 3b JSON output structure:
+
+1. **Review Interface**: Display synthesis + categorization/diagnostics for human review
 2. **Confidence Filtering**: Filter tickets by confidence level
 3. **POD Dashboard**: Visualize ticket distribution across PODs
-4. **Recategorization**: Allow manual POD override with audit trail
-5. **Bulk Actions**: Approve/reject multiple categorizations at once
-6. **Export**: Download filtered/reviewed tickets as CSV/Excel
+4. **Diagnostics Dashboard**: Visualize missed Diagnostics opportunities
+5. **Recategorization**: Allow manual POD/Diagnostics override with audit trail
+6. **Bulk Actions**: Approve/reject multiple analyses at once
+7. **Export**: Download filtered/reviewed tickets as CSV/Excel
+8. **Impact Analysis**: Calculate support cost savings from Diagnostics self-service
 
-## Notes - Phase 2
+## Notes - Phase 3b
 
-- POD definitions based on "Tag File - Tags and Definitions.csv"
-- Binary confidence scoring for actionability
-- LLM-based categorization to handle non-deterministic judgment calls
-- JSON structure designed for Phase 3 web UI reusability
-- All timestamps remain in IST (consistent with Phase 1)
+- Diagnostics context based on "diagnostics_summary.md" (product knowledge)
+- Custom field ID 41001255923353: "Was Diagnostic Panel used?"
+- Ternary assessment for nuanced judgment calls
+- JSON structure designed for Phase 4 web UI reusability
+- All timestamps remain in IST (consistent with Phase 1 & 2)
 - Comprehensive inline comments for code maintainability
+- Modular architecture allows future analysis types to be added easily
