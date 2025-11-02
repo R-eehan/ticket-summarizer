@@ -175,6 +175,11 @@ class GeminiSynthesizer:
                 result["synthesis"] = synthesis
 
                 self.logger.info(f"Successfully synthesized ticket {ticket_id}")
+
+                # Add delay to respect free tier rate limits
+                if config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+
                 return result
 
             except Exception as e:

@@ -133,7 +133,7 @@ class TicketCategorizer:
             "confidence": "not confident",  # Default to not confident for safety
             "confidence_reason": "",
             "alternative_pods": [],
-            "alternative_reasoning": null,
+            "alternative_reasoning": None,
             "metadata": {
                 "keywords_matched": [],
                 "decision_factors": []
@@ -322,6 +322,10 @@ class TicketCategorizer:
                     f"{categorization['primary_pod']} "
                     f"(confidence: {categorization['confidence']})"
                 )
+
+                # Add delay to respect free tier rate limits
+                if config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
 
                 return result
 

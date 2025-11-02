@@ -376,3 +376,134 @@ def validate_confidence(confidence: str) -> bool:
     valid_levels_lower = [c.lower() for c in config.CONFIDENCE_LEVELS]
 
     return confidence_normalized in valid_levels_lower
+
+
+# ============================================================================
+# DIAGNOSTICS ANALYSIS UTILITIES (Phase 3b)
+# ============================================================================
+
+def normalize_diagnostics_field(raw_value: Optional[str]) -> str:
+    """
+    Normalize the raw custom field value for "Was Diagnostic Panel used?"
+
+    The Zendesk custom field (ID: 41001255923353) may have inconsistent values:
+    - "Yes", "yes", "YES"
+    - "No", "no", "NO"
+    - "NA", "N/A", "na", "n/a"
+    - null, empty string, whitespace
+
+    This function normalizes these into one of three values:
+    - "yes": Diagnostics was confirmed to be used
+    - "no": Diagnostics was confirmed to NOT be used
+    - "unknown": Field is empty, null, or has ambiguous values like "NA"
+
+    Args:
+        raw_value: Raw value from Zendesk custom field (can be str, None, or empty)
+
+    Returns:
+        Normalized value: "yes", "no", or "unknown"
+
+    Example:
+        >>> normalize_diagnostics_field("Yes")
+        'yes'
+        >>> normalize_diagnostics_field("NO")
+        'no'
+        >>> normalize_diagnostics_field("N/A")
+        'unknown'
+        >>> normalize_diagnostics_field(None)
+        'unknown'
+        >>> normalize_diagnostics_field("")
+        'unknown'
+    """
+    if not raw_value:
+        return "unknown"
+
+    # Strip whitespace and convert to lowercase for comparison
+    normalized = str(raw_value).strip().lower()
+
+    if not normalized:
+        return "unknown"
+
+    # Map common variations to standard values
+    if normalized in ["yes", "y", "true", "1"]:
+        return "yes"
+    elif normalized in ["no", "n", "false", "0"]:
+        return "no"
+    elif normalized in ["na", "n/a", "n.a.", "n.a", "unknown", "unclear", "-"]:
+        return "unknown"
+    else:
+        # For any unexpected value, log a warning and return unknown
+        logger = logging.getLogger("ticket_summarizer")
+        logger.warning(
+            f"Unexpected diagnostics custom field value: '{raw_value}'. "
+            f"Defaulting to 'unknown'."
+        )
+        return "unknown"
+
+
+def validate_diagnostics_assessment(assessment: str) -> bool:
+    """
+    Validate diagnostics assessment value against allowed values.
+
+    For "could_diagnostics_help", only three values are allowed:
+    - "yes": Diagnostics could have helped
+    - "no": Diagnostics could NOT have helped
+    - "maybe": Unclear or ambiguous
+
+    Args:
+        assessment: Assessment value from LLM
+
+    Returns:
+        True if assessment is valid, False otherwise
+
+    Example:
+        >>> validate_diagnostics_assessment("yes")
+        True
+        >>> validate_diagnostics_assessment("no")
+        True
+        >>> validate_diagnostics_assessment("maybe")
+        True
+        >>> validate_diagnostics_assessment("probably")
+        False
+    """
+    if not assessment:
+        return False
+
+    # Case-insensitive check against valid assessment values
+    assessment_normalized = assessment.strip().lower()
+    valid_assessments = ["yes", "no", "maybe"]
+
+    return assessment_normalized in valid_assessments
+
+
+def validate_diagnostics_usage(usage: str) -> bool:
+    """
+    Validate diagnostics usage value against allowed values.
+
+    For "was_diagnostics_used", only three values are allowed:
+    - "yes": Diagnostics was used
+    - "no": Diagnostics was NOT used
+    - "unknown": Cannot determine from ticket synthesis
+
+    Args:
+        usage: Usage value from LLM
+
+    Returns:
+        True if usage is valid, False otherwise
+
+    Example:
+        >>> validate_diagnostics_usage("yes")
+        True
+        >>> validate_diagnostics_usage("unknown")
+        True
+        >>> validate_diagnostics_usage("maybe")
+        False
+    """
+    if not usage:
+        return False
+
+    # Case-insensitive check against valid usage values
+    usage_normalized = usage.strip().lower()
+    valid_usages = ["yes", "no", "unknown"]
+
+    return usage_normalized in valid_usages

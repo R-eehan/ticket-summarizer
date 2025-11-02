@@ -26,6 +26,9 @@ ZENDESK_BASE_URL = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2"
 ZENDESK_TICKET_URL = f"{ZENDESK_BASE_URL}/tickets/{{ticket_id}}.json"
 ZENDESK_COMMENTS_URL = f"{ZENDESK_BASE_URL}/tickets/{{ticket_id}}/comments.json"
 
+# Zendesk Custom Field IDs
+DIAGNOSTICS_CUSTOM_FIELD_ID = 41001255923353  # "Was Diagnostic Panel used?" field
+
 # ============================================================================
 # GEMINI CONFIGURATION
 # ============================================================================
@@ -44,7 +47,10 @@ GEMINI_MODEL = "gemini-flash-latest"
 
 # Maximum concurrent requests
 ZENDESK_MAX_CONCURRENT = 10  # Conservative for Enterprise plan
-GEMINI_MAX_CONCURRENT = 5    # Respect Gemini API limits
+GEMINI_MAX_CONCURRENT = 1    # Sequential for free tier (10 req/min limit)
+
+# Request delay configuration
+GEMINI_REQUEST_DELAY = 7     # Seconds between Gemini API calls (keeps under 10/min)
 
 # Retry configuration
 MAX_RETRIES = 1              # One retry attempt
@@ -272,3 +278,185 @@ Provide your categorization in this EXACT format:
 
 **Alternative Reasoning:**
 [1-2 sentences explaining why alternatives were considered, or "N/A" if no alternatives]"""
+
+# ============================================================================
+# DIAGNOSTICS ANALYSIS CONFIGURATION (Phase 3b)
+# ============================================================================
+
+# Diagnostics Analysis Prompt Template
+DIAGNOSTICS_ANALYSIS_PROMPT = """You are a Whatfix product expert analyzing support tickets to determine if the "Diagnostics" feature could have helped resolve or identify the issue.
+
+## WHAT IS DIAGNOSTICS?
+
+Diagnostics is a self-serviceable troubleshooting tool available within Whatfix Studio AND as a standalone entity that helps authors understand why their content fails and provides actionable guidance for resolution.
+
+**Diagnostics Capabilities:**
+1. Real-time event-based step execution feedback
+2. Visibility into the "why" of a step failure
+3. Visibility into rule evaluation status for old AND advanced visibility rules
+4. Available within Studio (one-stop-shop for authoring + testing)
+5. Available as a standalone entity that can be spun up on specific user machines via a keyboard shortcut. This helps address issues where everything works on the author's machine but doesn't work on a specific end user's machine. Can help catch user specific issues
+
+**What Diagnostics CAN Help With:**
+- Visibility rule failures (conditions not met, incorrect logic like OR vs AND)
+- Property mismatch (HTML properties don't match webpage elements)
+- Element detection failures
+- CSS selector failures - selectors added as part of the Visibility Rules OR Display Rules OR Element Precision rules failing during runtime
+- Step execution failures
+- Rule evaluation issues
+- Content not displaying due to targeting/visibility issues
+- Role tags not evaluating to true or false based on conditions applied
+
+**What Diagnostics CANNOT Help With:**
+- CSS selector construction/generation (technical request requiring support)
+- Feature requests for new product capabilities
+- Application-side bugs (not Whatfix-related)
+- Data migration or bulk operations
+- Integration setup (Confluence, Workday, etc.)
+- Performance optimization requests
+- Custom code implementation
+- Product knowledge questions such as:
+  - How do I create a flow/beacon/smart tip/blocker/launcher
+  - Branching related questions
+  - Pop-up sequencing
+  - Content movement from & across stages such as Draft/Ready/Production
+  - Deployment/delivery related questions
+
+## YOUR TASK
+
+Analyze the ticket synthesis and determine:
+1. **Was Diagnostics used?** (by customer OR support team)
+2. **Could Diagnostics have helped?** (to diagnose OR resolve the issue)
+
+## CRITICAL INSTRUCTIONS
+
+- Base your analysis ONLY on the synthesis summary, resolution, and custom field provided
+- DO NOT invent or assume information not present in the ticket
+- The custom field "was_diagnostics_used" may be unreliable (often "No" or "NA" even when it was used)
+- If the issue is a **technical request** (e.g., "help me create a CSS selector"), classify as "no" for "could_diagnostics_help"
+- If the issue is ambiguous or lacks detail, use "maybe" and mark confidence as "not confident"
+
+## TICKET DATA
+
+**Subject:** {subject}
+**Issue Reported:** {issue_reported}
+**Root Cause:** {root_cause}
+**Summary:** {summary}
+**Resolution:** {resolution}
+**Custom Field (was_diagnostics_used):** {custom_field_value}
+
+## ANALYSIS LOGIC
+
+### Step 1: Was Diagnostics Used?
+- Read the synthesis summary and resolution carefully
+- Look for explicit mentions of "Diagnostics", "diagnose panel", "diagnostic panel", "rule evaluation", "visibility status", "step failure", "CSS selector failure"
+- Check the custom field value (but don't trust it blindly - verify against synthesis)
+- If synthesis confirms usage: "yes"
+- If synthesis contradicts custom field or shows alternative debugging (console, manual): "no"
+- If unclear: "unknown"
+
+### Step 2: Could Diagnostics Have Helped?
+- Identify the issue type:
+  - **Troubleshooting issue?** (content not working, rules failing, elements not found) → Likely "yes" or "maybe"
+  - **Technical request?** (help create selector, configure integration) → Likely "no"
+  - **Feature request?** (new capability request) → "no"
+  - **Product knowledge question?** (knowledge or how to questions) → "no"
+
+- Match issue to Diagnostics capabilities:
+  - Visibility rule failures → "yes" (Diagnostics shows rule evaluation)
+  - Property mismatch → "yes" (Diagnostics shows property errors)
+  - Element not found → "yes" (Diagnostics shows targeting issues)
+  - CSS selector not working → "yes" (Diagnostics shows CSS failures)
+  - CSS selector construction → "no" (Diagnostics doesn't generate selectors)
+  - Generic "content not working" → "maybe" (need more context)
+
+- Confidence:
+  - "confident" if clear match or clear non-match
+  - "not confident" if ambiguous, generic, or insufficient detail
+
+### Step 3: Output Structure
+
+Provide your analysis in the following exact JSON structure:
+
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "yes|no|unknown",
+    "confidence": "confident|not confident",
+    "reasoning": "Explain why you classified this way, referencing synthesis and custom field"
+  }},
+  "could_diagnostics_help": {{
+    "assessment": "yes|no|maybe",
+    "confidence": "confident|not confident",
+    "reasoning": "Explain why Diagnostics could/couldn't help. Be specific about which Diagnostics capability applies or why it doesn't apply. If custom field says 'No' but Diagnostics could have helped, explicitly mention this gap.",
+    "diagnostics_capability_matched": ["capability 1", "capability 2"] or [],
+    "limitation_notes": "Explain limitations if 'no' or 'maybe'" or null
+  }},
+  "metadata": {{
+    "ticket_type": "troubleshooting|feature_request|technical_request|unclear"
+  }}
+}}
+```
+
+## EXAMPLES
+
+**Example 1: Ticket 89618**
+Subject: Conversation with Ramesh Rengarajan : Blocker Role Tags Setup
+Issue: Blocker appearing for all users instead of targeted roles
+Root Cause: Incorrect logic (OR instead of AND) in role tags visibility rules
+Resolution: Updated role tags combination to AND, blocker appeared to targeted audience
+Custom Field: "No"
+
+**Analysis:**
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "Custom field says 'No' and synthesis shows manual troubleshooting without mention of Diagnostics tool usage."
+  }},
+  "could_diagnostics_help": {{
+    "assessment": "yes",
+    "confidence": "confident",
+    "reasoning": "The issue was a visibility rule logic error (OR vs AND). Diagnostics provides real-time visibility rule evaluation status, which would have shown that the rule was evaluating incorrectly and highlighted the logic discrepancy. The author could have identified and fixed this themselves without raising a ticket. The custom field shows Diagnostics was NOT used, representing a missed opportunity for self-service resolution.",
+    "diagnostics_capability_matched": [
+      "Visibility rule evaluation status",
+      "Rule condition feedback"
+    ],
+    "limitation_notes": null
+  }},
+  "metadata": {{
+    "ticket_type": "troubleshooting"
+  }}
+}}
+```
+
+**Example 2: Ticket 88591**
+Subject: Flow Name: DO NOT DEAL - Integrity (Auto Case Creation for DQ team)
+Issue: Author needed specific CSS selectors for Flow steps
+Root Cause: Technical request for selector construction
+Resolution: Whatfix support team constructed and added selectors
+Custom Field: "No"
+
+**Analysis:**
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "Synthesis shows this was a technical request for support to generate selectors, not a troubleshooting scenario where Diagnostics would be used."
+  }},
+  "could_diagnostics_help": {{
+    "assessment": "no",
+    "confidence": "confident",
+    "reasoning": "This was a CSS selector construction request, which is a technical task best handled by Whatfix support. Diagnostics does not generate or construct CSS selectors - it only diagnoses issues with existing content. The ticket type is a 'technical request', not a troubleshooting issue, making Diagnostics irrelevant here.",
+    "diagnostics_capability_matched": [],
+    "limitation_notes": "Diagnostics cannot generate or construct CSS selectors; this requires technical expertise from support team."
+  }},
+  "metadata": {{
+    "ticket_type": "technical_request"
+  }}
+}}
+```
+
+Focus on accuracy and avoid hallucination. Only use information from the synthesis."""

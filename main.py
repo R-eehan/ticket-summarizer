@@ -6,7 +6,7 @@ A terminal-based application that fetches Zendesk tickets and uses
 Google Gemini 2.5 Pro to generate comprehensive summaries.
 
 Usage:
-    python main.py <input_csv_path>
+    python main.py --input <csv_path> --analysis-type <pod|diagnostics|both>
 """
 
 import sys
@@ -14,6 +14,7 @@ import csv
 import json
 import asyncio
 import time
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -27,6 +28,7 @@ import utils
 from fetcher import ZendeskFetcher
 from synthesizer import GeminiSynthesizer
 from categorizer import TicketCategorizer
+from diagnostics_analyzer import DiagnosticsAnalyzer
 
 
 class TicketSummarizer:
@@ -34,7 +36,7 @@ class TicketSummarizer:
     Main orchestrator for ticket summarization workflow.
     """
 
-    def __init__(self):
+    def __init__(self, analysis_type: str = "pod"):
         """
         Initialize the summarizer with logger and components.
 
@@ -43,14 +45,20 @@ class TicketSummarizer:
         - Console for rich terminal output
         - Fetcher for Zendesk API calls (Phase 1)
         - Synthesizer for LLM summarization (Phase 2)
-        - Categorizer for POD assignment (Phase 3) - NEW in Phase 2
-        - Statistics tracking for all three phases
+        - Categorizer for POD assignment (Phase 3a) - Phase 2
+        - Diagnostics Analyzer for Diagnostics analysis (Phase 3b) - Phase 3b
+        - Statistics tracking for all phases
+
+        Args:
+            analysis_type: Type of analysis to perform ("pod", "diagnostics", or "both")
         """
         self.logger = utils.setup_logger("ticket_summarizer")
         self.console = Console()
+        self.analysis_type = analysis_type
         self.fetcher = ZendeskFetcher()
         self.synthesizer = GeminiSynthesizer()
-        self.categorizer = TicketCategorizer()  # Phase 2: POD categorization
+        self.categorizer = TicketCategorizer()  # Phase 3a: POD categorization
+        self.diagnostics_analyzer = DiagnosticsAnalyzer()  # Phase 3b: Diagnostics analysis
 
         # Statistics tracking for all phases
         self.stats = {
@@ -59,11 +67,18 @@ class TicketSummarizer:
             "fetch_failed": 0,
             "synthesis_success": 0,
             "synthesis_failed": 0,
-            "categorization_success": 0,  # Phase 2: New stat
-            "categorization_failed": 0,  # Phase 2: New stat
-            "confident_count": 0,  # Phase 2: Confidence breakdown
-            "not_confident_count": 0,  # Phase 2: Confidence breakdown
-            "pod_distribution": {},  # Phase 2: POD counts
+            # POD categorization stats (Phase 3a)
+            "categorization_success": 0,
+            "categorization_failed": 0,
+            "confident_count": 0,
+            "not_confident_count": 0,
+            "pod_distribution": {},
+            # Diagnostics analysis stats (Phase 3b)
+            "diagnostics_analysis_success": 0,
+            "diagnostics_analysis_failed": 0,
+            "diagnostics_was_used": {"yes": 0, "no": 0, "unknown": 0},
+            "diagnostics_could_help": {"yes": 0, "no": 0, "maybe": 0},
+            "diagnostics_confidence": {"confident": 0, "not_confident": 0},
             "start_time": None,
             "end_time": None
         }
@@ -343,49 +358,213 @@ class TicketSummarizer:
 
         return categorized_tickets
 
+    async def diagnostics_phase(self, tickets: List[dict]) -> List[dict]:
+        """
+        Phase 3b: Analyze tickets for Diagnostics feature applicability.
+
+        This is the new phase added in Phase 3b of the project.
+        Takes synthesized tickets and analyzes whether Diagnostics was used
+        and could have helped resolve the issue.
+
+        Args:
+            tickets: List of synthesized ticket dictionaries
+
+        Returns:
+            List of tickets with diagnostics analysis
+        """
+        self.console.print("\n[bold cyan][PHASE 3b] Analyzing Diagnostics Applicability[/bold cyan]")
+
+        # Filter tickets that were successfully synthesized
+        # Only analyze tickets with synthesis data
+        tickets_to_analyze = [
+            t for t in tickets
+            if t.get('processing_status') == 'success' and 'synthesis' in t
+        ]
+
+        if not tickets_to_analyze:
+            self.console.print("[yellow]⚠[/yellow] No tickets to analyze (all synthesis failed)")
+            return tickets
+
+        analyzed_tickets = []
+
+        # Progress tracking with real-time updates
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=self.console
+        ) as progress:
+            task = progress.add_task(
+                "[cyan]Analyzing Diagnostics applicability...",
+                total=len(tickets_to_analyze)
+            )
+
+            def progress_callback(ticket_id: str, result: dict):
+                """
+                Callback for progress updates during diagnostics analysis.
+
+                Tracks:
+                - Success/failure counts
+                - "Was Diagnostics used?" breakdown
+                - "Could Diagnostics help?" breakdown
+                - Confidence breakdown
+                """
+                if result.get('diagnostics_analysis_status') == 'success':
+                    self.stats['diagnostics_analysis_success'] += 1
+
+                    # Get diagnostics analysis data
+                    diag_analysis = result.get('diagnostics_analysis', {})
+
+                    # Track "was_diagnostics_used" breakdown
+                    was_used = diag_analysis.get('was_diagnostics_used', {})
+                    llm_assessment = was_used.get('llm_assessment', '').lower()
+                    if llm_assessment in ['yes', 'no', 'unknown']:
+                        self.stats['diagnostics_was_used'][llm_assessment] += 1
+
+                    # Track "could_diagnostics_help" breakdown
+                    could_help = diag_analysis.get('could_diagnostics_help', {})
+                    assessment = could_help.get('assessment', '').lower()
+                    if assessment in ['yes', 'no', 'maybe']:
+                        self.stats['diagnostics_could_help'][assessment] += 1
+
+                    # Track confidence (using could_diagnostics_help confidence)
+                    confidence = could_help.get('confidence', '').lower()
+                    if confidence == 'confident':
+                        self.stats['diagnostics_confidence']['confident'] += 1
+                    elif confidence == 'not confident':
+                        self.stats['diagnostics_confidence']['not_confident'] += 1
+
+                else:
+                    self.stats['diagnostics_analysis_failed'] += 1
+
+                progress.update(task, advance=1)
+
+            # Analyze all tickets with rate limiting
+            analyzed_tickets = await self.diagnostics_analyzer.analyze_multiple(
+                tickets,
+                progress_callback
+            )
+
+        # Display diagnostics analysis results
+        self.console.print(
+            f"[green]✓[/green] Successfully analyzed: {self.stats['diagnostics_analysis_success']} tickets"
+        )
+        if self.stats['diagnostics_confidence']['confident'] > 0 or self.stats['diagnostics_confidence']['not_confident'] > 0:
+            self.console.print(
+                f"   • Confident: {self.stats['diagnostics_confidence']['confident']} tickets"
+            )
+            self.console.print(
+                f"   • Not Confident: {self.stats['diagnostics_confidence']['not_confident']} tickets"
+            )
+        if self.stats['diagnostics_analysis_failed'] > 0:
+            self.console.print(
+                f"[red]✗[/red] Failed: {self.stats['diagnostics_analysis_failed']} tickets"
+            )
+
+        return analyzed_tickets
+
     def generate_output(self, tickets: List[dict]) -> dict:
         """
-        Generate final output JSON structure with Phase 2 enhancements.
+        Generate final output JSON structure based on analysis type.
 
         Includes:
         - Phase 1 & 2 stats (fetch, synthesis)
-        - Phase 2 stats (categorization, confidence, POD distribution) - NEW
-        - All ticket data with synthesis and categorization
+        - Phase 3a stats (POD categorization) OR
+        - Phase 3b stats (Diagnostics analysis) OR
+        - Both (when analysis_type is "both")
+        - All ticket data with appropriate analysis results
         - Error tracking
 
         Args:
             tickets: List of processed ticket dictionaries
 
         Returns:
-            Complete output dictionary with enhanced metadata
+            Complete output dictionary with appropriate metadata
         """
         self.console.print("\n[cyan]Generating output JSON...[/cyan]")
 
         # Calculate processing time
         processing_time = self.stats['end_time'] - self.stats['start_time']
 
-        # Build enhanced output structure with Phase 2 metadata
-        output = {
-            "metadata": {
+        # Build metadata based on analysis type
+        if self.analysis_type == "pod":
+            # POD categorization metadata
+            metadata = {
+                "analysis_type": "pod",
                 "total_tickets": self.stats['total_tickets'],
-                "successfully_processed": self.stats['categorization_success'],  # Phase 2: Updated
-                "synthesis_failed": self.stats['synthesis_failed'],  # Phase 2: New
-                "categorization_failed": self.stats['categorization_failed'],  # Phase 2: New
+                "successfully_processed": self.stats['categorization_success'],
+                "synthesis_failed": self.stats['synthesis_failed'],
+                "categorization_failed": self.stats['categorization_failed'],
                 "failed": (
                     self.stats['fetch_failed'] +
                     self.stats['synthesis_failed'] +
                     self.stats['categorization_failed']
                 ),
-                # Phase 2: Confidence breakdown
                 "confidence_breakdown": {
                     "confident": self.stats['confident_count'],
                     "not_confident": self.stats['not_confident_count']
                 },
-                # Phase 2: POD distribution
                 "pod_distribution": self.stats['pod_distribution'],
                 "processed_at": utils.get_current_ist_timestamp(),
                 "processing_time_seconds": round(processing_time, 2)
-            },
+            }
+        elif self.analysis_type == "diagnostics":
+            # Diagnostics analysis metadata
+            metadata = {
+                "analysis_type": "diagnostics",
+                "total_tickets": self.stats['total_tickets'],
+                "successfully_processed": self.stats['diagnostics_analysis_success'],
+                "synthesis_failed": self.stats['synthesis_failed'],
+                "diagnostics_analysis_failed": self.stats['diagnostics_analysis_failed'],
+                "failed": (
+                    self.stats['fetch_failed'] +
+                    self.stats['synthesis_failed'] +
+                    self.stats['diagnostics_analysis_failed']
+                ),
+                "diagnostics_breakdown": {
+                    "was_used": self.stats['diagnostics_was_used'],
+                    "could_help": self.stats['diagnostics_could_help'],
+                    "confidence": self.stats['diagnostics_confidence']
+                },
+                "processed_at": utils.get_current_ist_timestamp(),
+                "processing_time_seconds": round(processing_time, 2)
+            }
+        else:  # both
+            # Combined metadata
+            metadata = {
+                "analysis_type": "both",
+                "total_tickets": self.stats['total_tickets'],
+                "successfully_processed": min(
+                    self.stats['categorization_success'],
+                    self.stats['diagnostics_analysis_success']
+                ),
+                "synthesis_failed": self.stats['synthesis_failed'],
+                "categorization_failed": self.stats['categorization_failed'],
+                "diagnostics_analysis_failed": self.stats['diagnostics_analysis_failed'],
+                "failed": (
+                    self.stats['fetch_failed'] +
+                    self.stats['synthesis_failed'] +
+                    max(self.stats['categorization_failed'], self.stats['diagnostics_analysis_failed'])
+                ),
+                "pod_analysis": {
+                    "confidence_breakdown": {
+                        "confident": self.stats['confident_count'],
+                        "not_confident": self.stats['not_confident_count']
+                    },
+                    "pod_distribution": self.stats['pod_distribution']
+                },
+                "diagnostics_analysis": {
+                    "was_used": self.stats['diagnostics_was_used'],
+                    "could_help": self.stats['diagnostics_could_help'],
+                    "confidence": self.stats['diagnostics_confidence']
+                },
+                "processed_at": utils.get_current_ist_timestamp(),
+                "processing_time_seconds": round(processing_time, 2)
+            }
+
+        output = {
+            "metadata": metadata,
             "tickets": [],
             "errors": []
         }
@@ -407,74 +586,189 @@ class TicketSummarizer:
 
         return output
 
-    def save_output(self, output: dict) -> str:
+    def save_output(self, output: dict, analysis_type: str = None) -> str:
         """
-        Save output to JSON file.
+        Save output to JSON file with analysis-type-specific naming.
 
         Args:
             output: Output dictionary to save
+            analysis_type: Type of analysis ("pod", "diagnostics", "both")
 
         Returns:
             Output filename
         """
-        filename = utils.generate_output_filename()
+        # Generate timestamped filename based on analysis type
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        analysis_suffix = analysis_type or self.analysis_type
 
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
+        if analysis_suffix == "both":
+            # For "both", generate two separate files
+            pod_filename = f"output_pod_{timestamp}.json"
+            diagnostics_filename = f"output_diagnostics_{timestamp}.json"
 
-        self.logger.info(f"Output saved to {filename}")
-        return filename
+            # Create POD-specific output
+            pod_output = output.copy()
+            pod_output["metadata"]["analysis_type"] = "pod"
+
+            # Create Diagnostics-specific output
+            diag_output = output.copy()
+            diag_output["metadata"]["analysis_type"] = "diagnostics"
+
+            # Save both files
+            with open(pod_filename, 'w', encoding='utf-8') as f:
+                json.dump(pod_output, f, indent=2, ensure_ascii=False)
+            with open(diagnostics_filename, 'w', encoding='utf-8') as f:
+                json.dump(diag_output, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"POD output saved to {pod_filename}")
+            self.logger.info(f"Diagnostics output saved to {diagnostics_filename}")
+            return f"{pod_filename}, {diagnostics_filename}"
+        else:
+            # Single file for pod or diagnostics
+            filename = f"output_{analysis_suffix}_{timestamp}.json"
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(output, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"Output saved to {filename}")
+            return filename
 
     def display_summary(self, output_filename: str):
         """
-        Display final summary to console with Phase 2 enhancements.
+        Display final summary to console based on analysis type.
 
         Shows:
         - Overall processing stats
-        - Confidence breakdown (Phase 2)
-        - POD distribution (Phase 2)
+        - Analysis-type-specific breakdowns
         - Processing time
         - Log file location
 
         Args:
-            output_filename: Name of the output file
+            output_filename: Name of the output file(s)
         """
         processing_time = self.stats['end_time'] - self.stats['start_time']
         minutes = int(processing_time // 60)
         seconds = int(processing_time % 60)
 
-        # Create summary table with Phase 2 stats
+        # Create summary table
         table = Table(title="Summary", show_header=False, box=None)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="white")
 
+        table.add_row("Analysis Type:", self.analysis_type.upper())
         table.add_row("Total Tickets:", str(self.stats['total_tickets']))
-        table.add_row(
-            "Successfully Processed:",
-            f"[green]{self.stats['categorization_success']}[/green]"
-        )
-        table.add_row(
-            "Failed:",
-            f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed'] + self.stats['categorization_failed']}[/red]"
-        )
 
-        # Phase 2: Confidence breakdown
-        if self.stats['confident_count'] > 0 or self.stats['not_confident_count'] > 0:
-            table.add_row("Confidence Breakdown:", "")
+        if self.analysis_type == "pod":
+            # POD categorization summary
             table.add_row(
-                "  • Confident:",
-                f"[green]{self.stats['confident_count']}[/green]"
+                "Successfully Processed:",
+                f"[green]{self.stats['categorization_success']}[/green]"
             )
             table.add_row(
-                "  • Not Confident:",
-                f"[yellow]{self.stats['not_confident_count']}[/yellow]"
+                "Failed:",
+                f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed'] + self.stats['categorization_failed']}[/red]"
             )
 
-        # Phase 2: POD distribution
-        if self.stats['pod_distribution']:
-            table.add_row("POD Distribution:", "")
-            for pod, count in sorted(self.stats['pod_distribution'].items()):
-                table.add_row(f"  • {pod}:", str(count))
+            # Confidence breakdown
+            if self.stats['confident_count'] > 0 or self.stats['not_confident_count'] > 0:
+                table.add_row("Confidence Breakdown:", "")
+                table.add_row(
+                    "  • Confident:",
+                    f"[green]{self.stats['confident_count']}[/green]"
+                )
+                table.add_row(
+                    "  • Not Confident:",
+                    f"[yellow]{self.stats['not_confident_count']}[/yellow]"
+                )
+
+            # POD distribution
+            if self.stats['pod_distribution']:
+                table.add_row("POD Distribution:", "")
+                for pod, count in sorted(self.stats['pod_distribution'].items()):
+                    table.add_row(f"  • {pod}:", str(count))
+
+        elif self.analysis_type == "diagnostics":
+            # Diagnostics analysis summary
+            table.add_row(
+                "Successfully Processed:",
+                f"[green]{self.stats['diagnostics_analysis_success']}[/green]"
+            )
+            table.add_row(
+                "Failed:",
+                f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed'] + self.stats['diagnostics_analysis_failed']}[/red]"
+            )
+
+            # Was Diagnostics Used breakdown
+            if any(self.stats['diagnostics_was_used'].values()):
+                table.add_row("Was Diagnostics Used?", "")
+                table.add_row(
+                    "  • Yes:",
+                    f"[green]{self.stats['diagnostics_was_used']['yes']}[/green]"
+                )
+                table.add_row(
+                    "  • No:",
+                    f"[red]{self.stats['diagnostics_was_used']['no']}[/red]"
+                )
+                table.add_row(
+                    "  • Unknown:",
+                    f"[yellow]{self.stats['diagnostics_was_used']['unknown']}[/yellow]"
+                )
+
+            # Could Diagnostics Help breakdown
+            if any(self.stats['diagnostics_could_help'].values()):
+                table.add_row("Could Diagnostics Help?", "")
+                table.add_row(
+                    "  • Yes:",
+                    f"[green]{self.stats['diagnostics_could_help']['yes']}[/green]"
+                )
+                table.add_row(
+                    "  • No:",
+                    f"[red]{self.stats['diagnostics_could_help']['no']}[/red]"
+                )
+                table.add_row(
+                    "  • Maybe:",
+                    f"[yellow]{self.stats['diagnostics_could_help']['maybe']}[/yellow]"
+                )
+
+            # Confidence breakdown
+            if any(self.stats['diagnostics_confidence'].values()):
+                table.add_row("Confidence:", "")
+                table.add_row(
+                    "  • Confident:",
+                    f"[green]{self.stats['diagnostics_confidence']['confident']}[/green]"
+                )
+                table.add_row(
+                    "  • Not Confident:",
+                    f"[yellow]{self.stats['diagnostics_confidence']['not_confident']}[/yellow]"
+                )
+
+        else:  # both
+            # Combined summary
+            table.add_row(
+                "Successfully Processed:",
+                f"[green]{min(self.stats['categorization_success'], self.stats['diagnostics_analysis_success'])}[/green]"
+            )
+            table.add_row(
+                "Failed:",
+                f"[red]{self.stats['fetch_failed'] + self.stats['synthesis_failed'] + max(self.stats['categorization_failed'], self.stats['diagnostics_analysis_failed'])}[/red]"
+            )
+
+            # POD stats
+            table.add_row("POD Analysis:", "")
+            if self.stats['pod_distribution']:
+                for pod, count in sorted(self.stats['pod_distribution'].items()):
+                    table.add_row(f"  • {pod}:", str(count))
+
+            # Diagnostics stats
+            table.add_row("Diagnostics Analysis:", "")
+            table.add_row(
+                "  • Could Help (Yes):",
+                f"[green]{self.stats['diagnostics_could_help']['yes']}[/green]"
+            )
+            table.add_row(
+                "  • Could Help (No):",
+                f"[red]{self.stats['diagnostics_could_help']['no']}[/red]"
+            )
 
         table.add_row("Total Time:", f"{minutes}m {seconds}s")
         table.add_row("Log File:", f"logs/app_{datetime.now().strftime('%Y%m%d')}.log")
@@ -486,7 +780,7 @@ class TicketSummarizer:
 
     async def run(self, csv_path: str):
         """
-        Main workflow execution.
+        Main workflow execution with branching based on analysis type.
 
         Args:
             csv_path: Path to input CSV file
@@ -501,31 +795,73 @@ class TicketSummarizer:
                 )
             )
 
+            # Display analysis type
+            self.console.print(f"\n[bold cyan]Analysis Type:[/bold cyan] {self.analysis_type.upper()}")
+
             # Start timer
             self.stats['start_time'] = time.time()
 
             # Load CSV
-            self.console.print(f"\n[cyan]Loading CSV:[/cyan] {csv_path}")
+            self.console.print(f"[cyan]Loading CSV:[/cyan] {csv_path}")
             ticket_ids = self.load_csv(csv_path)
             self.stats['total_tickets'] = len(ticket_ids)
             self.console.print(f"[green]✓[/green] Found {len(ticket_ids)} tickets to process")
 
-            # Phase 1: Fetch tickets from Zendesk
+            # Phase 1: Fetch tickets from Zendesk (with custom fields)
             fetched_tickets = await self.fetch_phase(ticket_ids)
 
             # Phase 2: Synthesize tickets using Gemini LLM
             synthesized_tickets = await self.synthesis_phase(fetched_tickets)
 
-            # Phase 3: Categorize tickets into PODs (NEW in Phase 2)
-            categorized_tickets = await self.categorization_phase(synthesized_tickets)
+            # Phase 3: Branch based on analysis type
+            processed_tickets = synthesized_tickets
+
+            if self.analysis_type == "pod":
+                # Phase 3a: POD categorization only
+                processed_tickets = await self.categorization_phase(synthesized_tickets)
+
+            elif self.analysis_type == "diagnostics":
+                # Phase 3b: Diagnostics analysis only
+                processed_tickets = await self.diagnostics_phase(synthesized_tickets)
+
+            elif self.analysis_type == "both":
+                # Phase 3a + 3b: Run both analyses in parallel
+                self.console.print(
+                    "\n[bold cyan][PHASE 3] Running POD Categorization + Diagnostics Analysis in Parallel[/bold cyan]"
+                )
+
+                # Create tasks for parallel execution
+                pod_task = asyncio.create_task(
+                    self.categorization_phase(synthesized_tickets)
+                )
+                diag_task = asyncio.create_task(
+                    self.diagnostics_phase(synthesized_tickets)
+                )
+
+                # Wait for both to complete
+                categorized_tickets, diagnostics_tickets = await asyncio.gather(
+                    pod_task, diag_task
+                )
+
+                # Merge results (both should have same tickets, just different analysis fields)
+                # We'll use the categorized_tickets as base and merge diagnostics analysis
+                for i, ticket in enumerate(categorized_tickets):
+                    if i < len(diagnostics_tickets):
+                        diag_ticket = diagnostics_tickets[i]
+                        if 'diagnostics_analysis' in diag_ticket:
+                            ticket['diagnostics_analysis'] = diag_ticket['diagnostics_analysis']
+                        if 'diagnostics_analysis_status' in diag_ticket:
+                            ticket['diagnostics_analysis_status'] = diag_ticket['diagnostics_analysis_status']
+
+                processed_tickets = categorized_tickets
 
             # End timer
             self.stats['end_time'] = time.time()
 
-            # Generate output with Phase 2 enhancements
-            output = self.generate_output(categorized_tickets)
+            # Generate output based on analysis type
+            output = self.generate_output(processed_tickets)
 
-            # Save output
+            # Save output (may create multiple files for "both" mode)
             output_filename = self.save_output(output)
 
             # Display summary
@@ -548,20 +884,45 @@ class TicketSummarizer:
 
 def main():
     """
-    Main entry point for the CLI application.
+    Main entry point for the CLI application with argparse support.
     """
-    # Check command line arguments
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <input_csv_path>")
-        print("\nExample:")
-        print("  python main.py input_tickets.csv")
-        sys.exit(1)
+    # Set up argument parser
+    parser = argparse.ArgumentParser(
+        description="Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # POD categorization only
+  python main.py --input tickets.csv --analysis-type pod
 
-    csv_path = sys.argv[1]
+  # Diagnostics analysis only
+  python main.py --input tickets.csv --analysis-type diagnostics
 
-    # Create and run summarizer
-    summarizer = TicketSummarizer()
-    asyncio.run(summarizer.run(csv_path))
+  # Both analyses in parallel
+  python main.py --input tickets.csv --analysis-type both
+        """
+    )
+
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to input CSV file containing ticket IDs"
+    )
+
+    parser.add_argument(
+        "--analysis-type",
+        choices=["pod", "diagnostics", "both"],
+        required=True,
+        help="Type of analysis to perform: 'pod' (POD categorization), "
+             "'diagnostics' (Diagnostics applicability), or 'both' (run both in parallel)"
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Create and run summarizer with specified analysis type
+    summarizer = TicketSummarizer(analysis_type=args.analysis_type)
+    asyncio.run(summarizer.run(args.input))
 
 
 if __name__ == "__main__":
