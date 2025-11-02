@@ -1,31 +1,40 @@
 # Zendesk Ticket Summarizer
 
-A terminal-based application that fetches Zendesk support tickets, uses Google Gemini 2.5 Pro to generate comprehensive summaries, and automatically categorizes tickets into PODs (Product Organizational Domains) for product area attribution.
+A terminal-based application that fetches Zendesk support tickets, uses Google Gemini 2.5 Pro to generate comprehensive summaries, and provides **flexible analysis capabilities** including POD categorization and Diagnostics feature analysis for product insights.
 
 ## Features
 
 ### Phase 1: Ticket Fetching & Synthesis
-- Fetches complete ticket data from Zendesk (subject, description, all comments)
+- Fetches complete ticket data from Zendesk (subject, description, all comments, custom fields)
 - Uses Gemini 2.5 Pro LLM to synthesize:
   - Issue reported (one-liner)
   - Root cause (one-liner)
   - Summary (3-4 line paragraph)
   - Resolution (one-liner)
 
-### Phase 2: POD Categorization (NEW)
+### Phase 2: POD Categorization
 - Automatically categorizes tickets into 13 PODs using LLM-based analysis
 - Provides clear reasoning for each categorization decision
 - Binary confidence scoring ("confident" vs "not confident") for human review
 - Suggests alternative PODs when ambiguous
 - Tracks POD distribution and confidence breakdown
 
+### Phase 3b: Diagnostics Analysis (NEW)
+- Analyzes if Whatfix's "Diagnostics" feature was used in troubleshooting
+- Evaluates if Diagnostics COULD have helped resolve/diagnose the issue
+- Reads Zendesk custom field "Was Diagnostic Panel used?" for validation
+- Ternary assessment ("yes", "no", "maybe") with confidence scoring
+- Identifies missed opportunities for self-service resolution
+- Provides detailed reasoning and matched Diagnostics capabilities
+
 ### General Features
-- 3-phase parallel processing with rate limiting for optimal performance
+- **Flexible Analysis Modes**: Choose POD categorization, Diagnostics analysis, or both in parallel
+- **Parallel Processing**: Run multiple analyses simultaneously for faster results
 - Real-time progress tracking for all phases in terminal
 - CSV auto-detection (supports multiple input formats)
 - Comprehensive error handling and logging
 - IST (Indian Standard Time) timestamp conversion
-- JSON output optimized for future web application integration
+- Separate JSON output files for different analysis types
 
 ## Prerequisites
 
@@ -71,14 +80,33 @@ A terminal-based application that fetches Zendesk support tickets, uses Google G
 ### Basic Usage
 
 ```bash
-python main.py <input_csv_path>
+python main.py --input <input_csv_path> --analysis-type <pod|diagnostics|both>
 ```
 
-### Example
+### Examples
 
+#### POD Categorization Only
 ```bash
-python main.py input_tickets_sample.csv
+python main.py --input input_tickets_sample.csv --analysis-type pod
 ```
+
+#### Diagnostics Analysis Only
+```bash
+python main.py --input diagnostics_support_tickets_q3.csv --analysis-type diagnostics
+```
+
+#### Both Analyses in Parallel
+```bash
+python main.py --input input_tickets_sample.csv --analysis-type both
+```
+
+### CLI Parameters
+
+- `--input`: **(Required)** Path to input CSV file containing ticket IDs
+- `--analysis-type`: **(Required)** Type of analysis to perform:
+  - `pod`: POD categorization only
+  - `diagnostics`: Diagnostics feature analysis only
+  - `both`: Run both analyses in parallel (generates two separate output files)
 
 ### Input CSV Format
 
@@ -106,7 +134,13 @@ The application will automatically detect which format you're using and process 
 
 ### Output
 
-The application generates a timestamped JSON file (e.g., `output_20250510.json`) with the following structure:
+The application generates timestamped JSON files based on the analysis type:
+
+- **POD Mode**: `output_pod_YYYYMMDD_HHMMSS.json`
+- **Diagnostics Mode**: `output_diagnostics_YYYYMMDD_HHMMSS.json`
+- **Both Mode**: Generates both files above in parallel
+
+#### POD Categorization Output Structure
 
 ```json
 {
@@ -165,6 +199,74 @@ The application generates a timestamped JSON file (e.g., `output_20250510.json`)
     }
   ],
   "errors": [...]
+}
+```
+
+#### Diagnostics Analysis Output Structure
+
+```json
+{
+  "metadata": {
+    "analysis_type": "diagnostics",
+    "total_tickets": 10,
+    "successfully_processed": 9,
+    "failed": 1,
+    "diagnostics_breakdown": {
+      "was_used": {
+        "yes": 2,
+        "no": 6,
+        "unknown": 1
+      },
+      "could_help": {
+        "yes": 5,
+        "no": 3,
+        "maybe": 1
+      },
+      "confidence": {
+        "confident": 7,
+        "not_confident": 2
+      }
+    },
+    "processed_at": "2025-11-02T14:30:00+05:30",
+    "processing_time_seconds": 45.2
+  },
+  "tickets": [
+    {
+      "ticket_id": "89618",
+      "subject": "Blocker Role Tags Setup",
+      "url": "https://whatfix.zendesk.com/agent/tickets/89618",
+      "synthesis": {
+        "issue_reported": "Blocker appearing for all users instead of targeted roles",
+        "root_cause": "Incorrect logic (OR instead of AND) in role tags visibility rules",
+        "summary": "...",
+        "resolution": "Updated role tags combination to AND"
+      },
+      "diagnostics_analysis": {
+        "was_diagnostics_used": {
+          "custom_field_value": "no",
+          "llm_assessment": "no",
+          "confidence": "confident",
+          "reasoning": "Custom field says 'No' and synthesis shows manual troubleshooting..."
+        },
+        "could_diagnostics_help": {
+          "assessment": "yes",
+          "confidence": "confident",
+          "reasoning": "The issue was a visibility rule logic error (OR vs AND). Diagnostics provides real-time visibility rule evaluation status...",
+          "diagnostics_capability_matched": [
+            "Visibility rule evaluation status",
+            "Rule condition feedback"
+          ],
+          "limitation_notes": null
+        },
+        "metadata": {
+          "ticket_type": "troubleshooting",
+          "analysis_timestamp": "2025-11-02T14:30:15+05:30"
+        }
+      },
+      "processing_status": "success"
+    }
+  ],
+  "errors": []
 }
 ```
 
