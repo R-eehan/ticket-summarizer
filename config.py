@@ -42,6 +42,22 @@ if not GEMINI_API_KEY:
 GEMINI_MODEL = "gemini-flash-latest"
 
 # ============================================================================
+# AZURE OPENAI CONFIGURATION (Phase 3c)
+# ============================================================================
+
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+
+# Validate Azure credentials (only if Azure is chosen as provider)
+# Validation happens at runtime in llm_provider.py to allow Gemini-only usage
+# without requiring Azure credentials
+
+# Default model provider (can be overridden via CLI)
+DEFAULT_MODEL_PROVIDER = "gemini"
+
+# ============================================================================
 # RATE LIMITING CONFIGURATION
 # ============================================================================
 

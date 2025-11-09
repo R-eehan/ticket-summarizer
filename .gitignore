@@ -46,6 +46,9 @@ output_*.json
 # Input Files (optional - user provides their own)
 input_tickets.csv
 
+# Test Files
+test_*.csv
+
 # OS
 .DS_Store
 Thumbs.db

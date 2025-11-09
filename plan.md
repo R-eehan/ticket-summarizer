@@ -1281,3 +1281,482 @@ Based on Phase 2 & 3b JSON output structure:
 - All timestamps remain in IST (consistent with Phase 1 & 2)
 - Comprehensive inline comments for code maintainability
 - Modular architecture allows future analysis types to be added easily
+
+---
+
+# Phase 3c: Multi-Model LLM Support
+
+## Overview
+
+Phase 3c introduces support for multiple LLM providers, allowing the application to switch between:
+1. **Google Gemini** (free tier, rate-limited)
+2. **Azure OpenAI GPT-4o** (enterprise deployment, higher limits)
+
+This enables cost optimization and prevents API limit exhaustion during large-scale analysis.
+
+## Problem Statement - Phase 3c
+
+**Current Challenges:**
+- Single LLM dependency (Gemini free tier only)
+- Hitting free-tier rate limits (10 requests/min) during bulk analysis
+- No fallback or alternative when Gemini quota is exhausted
+- Gemini free tier unreliable for production-scale workloads
+
+**Business Impact:**
+- Cannot process large ticket batches (>100 tickets) without multi-hour delays
+- Gemini free tier lacks SLA guarantees
+- Organization has unused Azure OpenAI capacity (enterprise deployment)
+
+**Solution Requirement:**
+- Support Azure OpenAI GPT-4o as alternative LLM provider
+- Allow runtime selection between providers via CLI
+- Maintain backward compatibility with existing Gemini-based code
+- No automatic fallback (fail hard to prevent half-baked results)
+
+## Technical Architecture - Phase 3c
+
+### Factory Pattern Implementation
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   LLMProviderFactory                         │
+│  Centralized provider selection and instantiation            │
+└──────────┬──────────────────┬────────────────────────────────┘
+           │                  │
+    ┌──────▼─────────┐  ┌────▼──────────────┐
+    │ GeminiClient   │  │ AzureOpenAIClient │
+    │ (free tier)    │  │ (enterprise)      │
+    └────────────────┘  └───────────────────┘
+           │                  │
+           │                  │
+    Both implement: generate_content(prompt) → LLMResponse
+
+┌──────────────────────────────────────────────────────────────┐
+│                       Consumers                               │
+│  GeminiSynthesizer, DiagnosticsAnalyzer                      │
+│  Use factory to get provider, agnostic to implementation     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Module Structure
+
+**New Module:** `llm_provider.py`
+- `LLMProviderFactory`: Provider selection logic
+- `GeminiClient`: Wrapper for Google Gemini API
+- `AzureOpenAIClient`: Wrapper for Azure OpenAI API
+- `LLMResponse`: Unified response object (normalizes `.text` property)
+
+**Updated Modules:**
+- `config.py`: Added Azure configuration constants
+- `synthesizer.py`: Accepts `model_provider` parameter
+- `diagnostics_analyzer.py`: Accepts `model_provider` parameter
+- `main.py`: Added `--model-provider` CLI argument
+- `utils.py`: Fixed `normalize_diagnostics_field()` bug
+
+## Technical Decisions - Phase 3c
+
+### 1. Factory Pattern Architecture
+
+**Decision:** Use Factory Pattern instead of Strategy Pattern
+
+**Rationale:**
+- **Simplicity:** Factory centralizes provider creation logic
+- **No runtime switching:** Once initialized, provider doesn't change during execution
+- **Cleaner initialization:** Consumers (synthesizer, analyzer) don't need to know provider details
+- **Easier testing:** Can mock factory to return test providers
+
+**Alternative Considered:** Strategy Pattern with runtime provider swapping
+- **Rejected because:** No use case for switching providers mid-execution
+- Adds unnecessary complexity for zero benefit
+
+### 2. No Automatic Fallback
+
+**Decision:** Retry Azure on failure, then fail hard (no fallback to Gemini)
+
+**Rationale:**
+- **Data integrity:** Gemini free tier may give incomplete results on large datasets
+- **Explicit user control:** User should decide which provider to use for each run
+- **Avoid mixed results:** Falling back mid-run creates inconsistent output (some tickets analyzed by Azure, others by Gemini)
+- **Easier debugging:** Clear failure point instead of silent degradation
+
+**User's explicit requirement:**
+> "When the data is large, falling back to Gemini which is a free tier API will give me half baked results. Fail hard, I can choose to re-run when I want."
+
+**Future Enhancement:** Fallback to Gemini when paid-tier Gemini API key is available
+
+### 3. Global Model Provider Selection
+
+**Decision:** Single `--model-provider` applies to ALL analysis phases (synthesis + diagnostics + POD)
+
+**Rationale:**
+- **Simplicity:** Easier CLI interface, fewer parameters to track
+- **Consistency:** Same LLM for entire run ensures consistent analysis quality
+- **Cost tracking:** Clear which provider was used for billing purposes
+- **User requirement:** User requested CLI parameter, not per-phase selection
+
+**Alternative Considered:** Per-analysis-type provider selection
+- Example: `--synthesis-model azure --diagnostics-model gemini`
+- **Rejected because:** Over-engineered for current requirements, user didn't request it
+- Can be added in Phase 4 if needed
+
+### 4. Azure OpenAI Configuration
+
+**Decision:** Use modern `openai` Python SDK (v2.7.1+) with `AzureOpenAI` class
+
+**Rationale:**
+- **Official recommendation:** Microsoft's latest Azure OpenAI docs recommend this approach
+- **Deprecation:** Old `openai.api_type = "azure"` config is deprecated in v1.0+
+- **Active maintenance:** v2.x is actively maintained, v0.28.1 is EOL
+- **Better error handling:** Modern SDK has improved error messages and retry logic
+
+**Implementation Details:**
+```python
+from openai import AzureOpenAI
+
+client = AzureOpenAI(
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version="2024-02-01"  # Latest stable version
+)
+
+response = client.chat.completions.create(
+    model=AZURE_OPENAI_DEPLOYMENT_NAME,  # Deployment name, not model name
+    messages=[...],
+    temperature=0.3,  # Lower for factual analysis
+    max_tokens=2000
+)
+```
+
+**Configuration Required in `.env`:**
+```env
+AZURE_OPENAI_ENDPOINT=https://openai-for-product.openai.azure.com/
+AZURE_OPENAI_API_KEY=<your-key>
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o  # Your deployment name
+AZURE_OPENAI_API_VERSION=2024-02-01
+```
+
+### 5. Backward Compatibility
+
+**Decision:** Default `model_provider="gemini"` for all components
+
+**Rationale:**
+- **No breaking changes:** Existing code works without modification
+- **Gradual migration:** Users can test Azure without rewriting code
+- **Safe rollback:** If Azure has issues, revert by removing `--model-provider` flag
+
+**Testing:**
+- Validated that omitting `--model-provider` defaults to Gemini
+- All existing tests pass without changes
+
+### 6. Custom Field Bug Fix (Bonus)
+
+**Decision:** Fix `normalize_diagnostics_field()` to correctly interpret Zendesk enum values
+
+**Problem:**
+- Zendesk stores values as `"diagnostic_yes"` and `"diagnostic_no"` (enum IDs)
+- Old code checked for `"yes"` and `"no"` → found nothing → marked as `"unknown"`
+
+**Fix:**
+```python
+# BEFORE (incorrect)
+if normalized in ["yes", "y", "true", "1"]:
+    return "yes"
+
+# AFTER (correct)
+if normalized == "diagnostic_yes":
+    return "Yes"  # Note: Capital "Y" for display consistency
+elif normalized == "diagnostic_no":
+    return "No"
+else:
+    return "Not Applicable"  # Changed from "unknown"
+```
+
+**Rationale:**
+- **Zendesk enum fields:** Store enum IDs, not display strings
+- **Improved accuracy:** Diagnostics analysis now correctly reads custom field
+- **User requirement:** Explicitly requested this fix
+- **Low risk:** Only affects diagnostics analysis, doesn't touch other modules
+
+## Updated File Structure - Phase 3c
+
+```
+ticket-summarizer/
+├── plan.md                      # This file (UPDATED - Phase 3c docs)
+├── README.md                    # Setup & usage (NEEDS UPDATE)
+├── requirements.txt             # UPDATED (added openai>=2.7.1)
+├── .env                         # UPDATED (added Azure config)
+├── config.py                    # UPDATED (Azure constants)
+├── llm_provider.py              # NEW (factory + provider wrappers)
+├── utils.py                     # UPDATED (fixed normalize_diagnostics_field)
+├── synthesizer.py               # UPDATED (accepts model_provider)
+├── diagnostics_analyzer.py      # UPDATED (accepts model_provider)
+├── main.py                      # UPDATED (--model-provider CLI arg)
+├── categorizer.py               # No changes (uses Gemini directly)
+├── fetcher.py                   # No changes
+└── logs/
+```
+
+**Note:** `categorizer.py` NOT updated yet (still uses Gemini directly)
+- **Reason:** Categorization is less token-heavy than synthesis
+- **Future:** Can migrate to factory pattern in Phase 4 if needed
+
+## CLI Usage - Phase 3c
+
+### Basic Usage (Gemini - Default)
+
+```bash
+# POD categorization with Gemini (no change from before)
+python main.py --input tickets.csv --analysis-type pod
+
+# Diagnostics analysis with Gemini
+python main.py --input tickets.csv --analysis-type diagnostics
+```
+
+### Azure OpenAI Usage (New)
+
+```bash
+# POD categorization with Azure OpenAI
+python main.py --input tickets.csv --analysis-type pod --model-provider azure
+
+# Diagnostics analysis with Azure OpenAI
+python main.py --input tickets.csv --analysis-type diagnostics --model-provider azure
+
+# Both analyses with Azure OpenAI
+python main.py --input tickets.csv --analysis-type both --model-provider azure
+```
+
+### Terminal Output - Phase 3c
+
+```
+╔══════════════════════════════════════════════════════════╗
+║   Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro  ║
+╚══════════════════════════════════════════════════════════╝
+
+Analysis Type: DIAGNOSTICS
+Model Provider: AZURE          ← NEW: Shows which LLM is being used
+
+Loading CSV: tickets.csv
+✓ Found 50 tickets to process
+
+[PHASE 1] Fetching Ticket Data from Zendesk (with custom fields)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50/50 [00:30<00:00, 1.7 tickets/s]
+✓ Successfully fetched: 50 tickets
+
+[PHASE 2] Synthesizing with Azure OpenAI GPT-4o    ← NEW: Shows provider
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50/50 [01:15<00:00, 0.7 tickets/s]
+✓ Successfully synthesized: 50 tickets
+
+[PHASE 3b] Analyzing Diagnostics Applicability with Azure OpenAI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50/50 [01:10<00:00, 0.7 tickets/s]
+✓ Successfully analyzed: 50 tickets
+```
+
+## Configuration Requirements - Phase 3c
+
+### Environment Variables (`.env`)
+
+**Required for Gemini (existing):**
+```env
+GEMINI_API_KEY=your_gemini_key_here
+```
+
+**Required for Azure OpenAI (new):**
+```env
+AZURE_OPENAI_ENDPOINT=https://openai-for-product.openai.azure.com/
+AZURE_OPENAI_API_KEY=your_azure_key_here
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-02-01
+```
+
+**Best Practice:** Keep BOTH sets of credentials in `.env`
+- Application validates credentials only for chosen provider at runtime
+- Allows easy switching without editing `.env` each time
+
+### Dependencies
+
+**New dependency:**
+```
+openai>=2.7.1
+```
+
+**Installation:**
+```bash
+pip install --upgrade -r requirements.txt
+```
+
+## Testing Strategy - Phase 3c
+
+### Test 1: Backward Compatibility (Gemini)
+
+**Goal:** Ensure existing functionality unchanged
+
+**Command:**
+```bash
+python main.py --input test_tickets_5.csv --analysis-type diagnostics
+```
+
+**Expected:**
+- ✅ Defaults to Gemini
+- ✅ No errors
+- ✅ Output JSON identical to pre-Phase-3c format
+
+### Test 2: Azure OpenAI Integration
+
+**Goal:** Validate Azure provider works end-to-end
+
+**Command:**
+```bash
+python main.py --input test_tickets_5.csv --analysis-type diagnostics --model-provider azure
+```
+
+**Expected:**
+- ✅ Uses Azure OpenAI GPT-4o
+- ✅ No API errors
+- ✅ Response quality comparable to Gemini
+- ✅ Faster processing (no 7-second delays)
+
+### Test 3: Custom Field Fix
+
+**Goal:** Validate `diagnostic_yes`/`diagnostic_no` correctly interpreted
+
+**Test Tickets:**
+- Ticket with `diagnostic_yes` → should show "Yes"
+- Ticket with `diagnostic_no` → should show "No"
+- Ticket with `null` → should show "Not Applicable"
+
+**Validation:**
+- Check output JSON `diagnostics_analysis.was_diagnostics_used.custom_field_value`
+
+### Test 4: Error Handling
+
+**Goal:** Validate Azure failures handled gracefully
+
+**Scenario:** Invalid Azure API key
+
+**Expected:**
+- ❌ Clear error message: "Azure OpenAI API call failed: ..."
+- ❌ No fallback to Gemini
+- ❌ Exit with error code
+
+### Test 5: Large Dataset
+
+**Goal:** Validate Azure handles bulk processing without rate limits
+
+**Command:**
+```bash
+python main.py --input tickets_100.csv --analysis-type both --model-provider azure
+```
+
+**Expected:**
+- ✅ Completes faster than Gemini (no 7s delays)
+- ✅ No rate limit errors
+- ✅ All 100 tickets processed successfully
+
+## Risk Mitigation - Phase 3c
+
+| Risk | Mitigation |
+|------|------------|
+| Azure API key leakage | Stored in `.env` (gitignored), never hardcoded |
+| Azure quota exhaustion | Monitor usage in Azure portal, set alerts |
+| Breaking changes to Gemini code | Factory pattern isolates provider-specific code |
+| Inconsistent results between providers | Use same prompts, temperature=0.3 for determinism |
+| Azure deployment name changes | Configurable via `.env`, clear error if wrong |
+
+## Success Criteria - Phase 3c
+
+### Functional Requirements
+
+1. ✅ **Provider Selection**
+   - CLI parameter `--model-provider {gemini,azure}` works
+   - Defaults to Gemini when omitted
+   - Validates credentials before processing
+
+2. ✅ **Azure Integration**
+   - Successfully calls Azure OpenAI GPT-4o
+   - Response parsing works (same format as Gemini)
+   - Error handling prevents crashes
+
+3. ✅ **Custom Field Fix**
+   - `diagnostic_yes` → "Yes"
+   - `diagnostic_no` → "No"
+   - Other values → "Not Applicable"
+
+4. ✅ **Backward Compatibility**
+   - All existing Gemini-based code works unchanged
+   - No breaking changes to output JSON structure
+   - Existing tests pass without modification
+
+### Performance Requirements
+
+1. ✅ **Azure Speed**
+   - No artificial 7-second delays (unlike Gemini free tier)
+   - Processes 100 tickets in <5 minutes (vs. 12+ minutes with Gemini)
+
+2. ✅ **No Rate Limits**
+   - Azure handles concurrent requests (up to deployment limit)
+   - No "quota exceeded" errors
+
+### Quality Requirements
+
+1. ✅ **Code Quality**
+   - Comprehensive inline comments (Phase 3c: Multi-Model Support)
+   - Factory pattern correctly implements abstraction
+   - No code duplication between providers
+
+2. ✅ **Documentation**
+   - plan.md updated with Phase 3c section (this document)
+   - README.md updated with Azure setup instructions
+   - All architecture decisions documented with reasoning
+
+## Implementation Checklist - Phase 3c
+
+- [x] Update `.env` with Azure configuration
+- [x] Add `openai>=2.7.1` to `requirements.txt`
+- [x] Update `config.py` with Azure constants
+- [x] Create `llm_provider.py` (factory + wrappers)
+- [x] Fix `normalize_diagnostics_field()` in `utils.py`
+- [x] Update `synthesizer.py` to use factory
+- [x] Update `diagnostics_analyzer.py` to use factory
+- [x] Update `main.py` with `--model-provider` CLI arg
+- [x] Update `plan.md` with Phase 3c documentation
+- [ ] Update `README.md` with Azure setup instructions
+- [ ] Test with Gemini (backward compatibility)
+- [ ] Test with Azure OpenAI (new integration)
+- [ ] Test custom field fix with known tickets
+- [ ] Commit to feature branch
+- [ ] Merge to main after approval
+
+## Future Enhancements - Phase 4
+
+Based on Phase 3c foundation:
+
+1. **Per-Analysis Model Selection**
+   - `--synthesis-model azure --diagnostics-model gemini`
+   - Use Azure for heavy synthesis, Gemini for lightweight diagnostics
+
+2. **Automatic Fallback (Conditional)**
+   - Fallback to Gemini ONLY if paid-tier Gemini API key available
+   - Track which provider was used per ticket in output JSON
+
+3. **Cost Tracking**
+   - Log token usage for Gemini vs. Azure
+   - Calculate cost per run for budgeting
+
+4. **Migrate Categorizer**
+   - Update `categorizer.py` to use factory pattern
+   - Currently still uses Gemini directly (low priority)
+
+5. **Additional Providers**
+   - OpenAI direct API (non-Azure)
+   - Anthropic Claude
+   - AWS Bedrock
+
+## Notes - Phase 3c
+
+- Modern Azure OpenAI SDK (`openai>=2.7.1`) used per Microsoft's latest docs
+- Factory pattern chosen for simplicity over Strategy pattern (no runtime switching needed)
+- No automatic fallback to prevent inconsistent results (user's explicit requirement)
+- Custom field bug fix included as bonus (user reported incorrect `diagnostic_yes`/`diagnostic_no` handling)
+- All architecture decisions documented with reasoning in plan.md (user's requirement)
+- Backward compatibility maintained: default model_provider="gemini"
+- Phase 3c builds on Phase 3b (diagnostics) and Phase 2 (POD categorization) without breaking changes

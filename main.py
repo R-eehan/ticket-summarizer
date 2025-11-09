@@ -36,7 +36,7 @@ class TicketSummarizer:
     Main orchestrator for ticket summarization workflow.
     """
 
-    def __init__(self, analysis_type: str = "pod"):
+    def __init__(self, analysis_type: str = "pod", model_provider: str = "gemini"):
         """
         Initialize the summarizer with logger and components.
 
@@ -51,14 +51,16 @@ class TicketSummarizer:
 
         Args:
             analysis_type: Type of analysis to perform ("pod", "diagnostics", or "both")
+            model_provider: LLM provider to use ("gemini" or "azure")
         """
         self.logger = utils.setup_logger("ticket_summarizer")
         self.console = Console()
         self.analysis_type = analysis_type
+        self.model_provider = model_provider
         self.fetcher = ZendeskFetcher()
-        self.synthesizer = GeminiSynthesizer()
+        self.synthesizer = GeminiSynthesizer(model_provider=model_provider)  # Phase 3c: Multi-model
         self.categorizer = TicketCategorizer()  # Phase 3a: POD categorization
-        self.diagnostics_analyzer = DiagnosticsAnalyzer()  # Phase 3b: Diagnostics analysis
+        self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider)  # Phase 3b + 3c
 
         # Statistics tracking for all phases
         self.stats = {
@@ -795,8 +797,9 @@ class TicketSummarizer:
                 )
             )
 
-            # Display analysis type
+            # Display analysis type and model provider
             self.console.print(f"\n[bold cyan]Analysis Type:[/bold cyan] {self.analysis_type.upper()}")
+            self.console.print(f"[bold cyan]Model Provider:[/bold cyan] {self.model_provider.upper()}")
 
             # Start timer
             self.stats['start_time'] = time.time()
@@ -892,14 +895,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # POD categorization only
+  # POD categorization with Gemini (default)
   python main.py --input tickets.csv --analysis-type pod
 
-  # Diagnostics analysis only
+  # POD categorization with Azure OpenAI
+  python main.py --input tickets.csv --analysis-type pod --model-provider azure
+
+  # Diagnostics analysis with Gemini
   python main.py --input tickets.csv --analysis-type diagnostics
 
-  # Both analyses in parallel
-  python main.py --input tickets.csv --analysis-type both
+  # Diagnostics analysis with Azure OpenAI
+  python main.py --input tickets.csv --analysis-type diagnostics --model-provider azure
+
+  # Both analyses in parallel with Azure OpenAI
+  python main.py --input tickets.csv --analysis-type both --model-provider azure
         """
     )
 
@@ -917,11 +926,22 @@ Examples:
              "'diagnostics' (Diagnostics applicability), or 'both' (run both in parallel)"
     )
 
+    parser.add_argument(
+        "--model-provider",
+        choices=["gemini", "azure"],
+        default="gemini",
+        help="LLM provider to use: 'gemini' (Google Gemini free tier) or "
+             "'azure' (Azure OpenAI GPT-4o). Defaults to 'gemini'"
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
-    # Create and run summarizer with specified analysis type
-    summarizer = TicketSummarizer(analysis_type=args.analysis_type)
+    # Create and run summarizer with specified analysis type and model provider
+    summarizer = TicketSummarizer(
+        analysis_type=args.analysis_type,
+        model_provider=args.model_provider
+    )
     asyncio.run(summarizer.run(args.input))
 
 

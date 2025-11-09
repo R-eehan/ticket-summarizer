@@ -386,59 +386,55 @@ def normalize_diagnostics_field(raw_value: Optional[str]) -> str:
     """
     Normalize the raw custom field value for "Was Diagnostic Panel used?"
 
-    The Zendesk custom field (ID: 41001255923353) may have inconsistent values:
-    - "Yes", "yes", "YES"
-    - "No", "no", "NO"
-    - "NA", "N/A", "na", "n/a"
-    - null, empty string, whitespace
+    The Zendesk custom field (ID: 41001255923353) stores values as enum IDs:
+    - "diagnostic_yes": Diagnostics was used → maps to "Yes"
+    - "diagnostic_no": Diagnostics was NOT used → maps to "No"
+    - Any other value (null, empty, NA, etc.) → maps to "Not Applicable"
 
-    This function normalizes these into one of three values:
-    - "yes": Diagnostics was confirmed to be used
-    - "no": Diagnostics was confirmed to NOT be used
-    - "unknown": Field is empty, null, or has ambiguous values like "NA"
+    IMPORTANT: This is a Zendesk enum field, NOT a free-text field.
+    The values are stored as enum IDs (diagnostic_yes/diagnostic_no), not display strings.
 
     Args:
         raw_value: Raw value from Zendesk custom field (can be str, None, or empty)
 
     Returns:
-        Normalized value: "yes", "no", or "unknown"
+        Normalized value: "Yes", "No", or "Not Applicable"
 
     Example:
-        >>> normalize_diagnostics_field("Yes")
-        'yes'
-        >>> normalize_diagnostics_field("NO")
-        'no'
+        >>> normalize_diagnostics_field("diagnostic_yes")
+        'Yes'
+        >>> normalize_diagnostics_field("diagnostic_no")
+        'No'
         >>> normalize_diagnostics_field("N/A")
-        'unknown'
+        'Not Applicable'
         >>> normalize_diagnostics_field(None)
-        'unknown'
+        'Not Applicable'
         >>> normalize_diagnostics_field("")
-        'unknown'
+        'Not Applicable'
     """
     if not raw_value:
-        return "unknown"
+        return "Not Applicable"
 
     # Strip whitespace and convert to lowercase for comparison
     normalized = str(raw_value).strip().lower()
 
     if not normalized:
-        return "unknown"
+        return "Not Applicable"
 
-    # Map common variations to standard values
-    if normalized in ["yes", "y", "true", "1"]:
-        return "yes"
-    elif normalized in ["no", "n", "false", "0"]:
-        return "no"
-    elif normalized in ["na", "n/a", "n.a.", "n.a", "unknown", "unclear", "-"]:
-        return "unknown"
+    # Map Zendesk enum IDs to display values
+    if normalized == "diagnostic_yes":
+        return "Yes"
+    elif normalized == "diagnostic_no":
+        return "No"
     else:
-        # For any unexpected value, log a warning and return unknown
+        # For any other value (NA, null, unknown, etc.), return "Not Applicable"
+        # Log a debug message (not warning) since "NA" and empty values are expected
         logger = logging.getLogger("ticket_summarizer")
-        logger.warning(
-            f"Unexpected diagnostics custom field value: '{raw_value}'. "
-            f"Defaulting to 'unknown'."
+        logger.debug(
+            f"Diagnostics custom field value '{raw_value}' is not 'diagnostic_yes' or 'diagnostic_no'. "
+            f"Marking as 'Not Applicable'."
         )
-        return "unknown"
+        return "Not Applicable"
 
 
 def validate_diagnostics_assessment(assessment: str) -> bool:

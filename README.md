@@ -1,6 +1,6 @@
 # Zendesk Ticket Summarizer
 
-A terminal-based application that fetches Zendesk support tickets, uses Google Gemini 2.5 Pro to generate comprehensive summaries, and provides **flexible analysis capabilities** including POD categorization and Diagnostics feature analysis for product insights.
+A terminal-based application that fetches Zendesk support tickets, uses AI (Google Gemini or Azure OpenAI GPT-4o) to generate comprehensive summaries, and provides **flexible analysis capabilities** including POD categorization and Diagnostics feature analysis for product insights.
 
 ## Features
 
@@ -19,7 +19,7 @@ A terminal-based application that fetches Zendesk support tickets, uses Google G
 - Suggests alternative PODs when ambiguous
 - Tracks POD distribution and confidence breakdown
 
-### Phase 3b: Diagnostics Analysis (NEW)
+### Phase 3b: Diagnostics Analysis
 - Analyzes if Whatfix's "Diagnostics" feature was used in troubleshooting
 - Evaluates if Diagnostics COULD have helped resolve/diagnose the issue
 - Reads Zendesk custom field "Was Diagnostic Panel used?" for validation
@@ -27,8 +27,17 @@ A terminal-based application that fetches Zendesk support tickets, uses Google G
 - Identifies missed opportunities for self-service resolution
 - Provides detailed reasoning and matched Diagnostics capabilities
 
+### Phase 3c: Multi-Model LLM Support (NEW)
+- **Choose Your AI Provider**: Switch between Google Gemini (free tier) or Azure OpenAI GPT-4o (enterprise)
+- **Cost Optimization**: Use Azure to avoid free-tier rate limits for bulk processing
+- **No Performance Degradation**: Azure processes faster without artificial delays
+- **Backward Compatible**: Defaults to Gemini, existing workflows unchanged
+- **Simple CLI Flag**: `--model-provider azure` or `--model-provider gemini`
+- Same analysis quality across both providers (identical prompts, consistent outputs)
+
 ### General Features
 - **Flexible Analysis Modes**: Choose POD categorization, Diagnostics analysis, or both in parallel
+- **Flexible LLM Provider**: Choose between Gemini (free) or Azure OpenAI (enterprise)
 - **Parallel Processing**: Run multiple analyses simultaneously for faster results
 - Real-time progress tracking for all phases in terminal
 - CSV auto-detection (supports multiple input formats)
@@ -40,7 +49,9 @@ A terminal-based application that fetches Zendesk support tickets, uses Google G
 
 - Python 3.8 or higher
 - Zendesk account with API access (Enterprise plan recommended)
-- Google Gemini API key
+- **At least one** of the following LLM providers:
+  - **Google Gemini API key** (free tier, default)
+  - **Azure OpenAI access** (enterprise, faster for bulk processing)
 
 ## Installation
 
@@ -68,36 +79,63 @@ A terminal-based application that fetches Zendesk support tickets, uses Google G
    ```
 
    Edit `.env` and add your credentials:
+
+   **Required (Zendesk):**
    ```env
    ZENDESK_API_KEY=your_zendesk_api_token_here
    ZENDESK_SUBDOMAIN=whatfix
    ZENDESK_EMAIL=avinash.pai@whatfix.com
+   ```
+
+   **Required for Gemini (default LLM):**
+   ```env
    GEMINI_API_KEY=your_gemini_api_key_here
    ```
+
+   **Optional - Azure OpenAI (enterprise LLM):**
+   ```env
+   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+   AZURE_OPENAI_API_KEY=your_azure_api_key_here
+   AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+   AZURE_OPENAI_API_VERSION=2024-02-01
+   ```
+
+   **Note:** You need **at least one** LLM provider configured (Gemini OR Azure). Both can be configured for easy switching.
 
 ## Usage
 
 ### Basic Usage
 
 ```bash
-python main.py --input <input_csv_path> --analysis-type <pod|diagnostics|both>
+python main.py --input <input_csv_path> --analysis-type <pod|diagnostics|both> [--model-provider <gemini|azure>]
 ```
 
 ### Examples
 
-#### POD Categorization Only
+#### Using Default Provider (Gemini)
+
 ```bash
+# POD Categorization with Gemini (default)
 python main.py --input input_tickets_sample.csv --analysis-type pod
-```
 
-#### Diagnostics Analysis Only
-```bash
+# Diagnostics Analysis with Gemini
 python main.py --input diagnostics_support_tickets_q3.csv --analysis-type diagnostics
+
+# Both Analyses with Gemini
+python main.py --input input_tickets_sample.csv --analysis-type both
 ```
 
-#### Both Analyses in Parallel
+#### Using Azure OpenAI (Faster for Bulk Processing)
+
 ```bash
-python main.py --input input_tickets_sample.csv --analysis-type both
+# POD Categorization with Azure OpenAI
+python main.py --input input_tickets_sample.csv --analysis-type pod --model-provider azure
+
+# Diagnostics Analysis with Azure OpenAI
+python main.py --input diagnostics_support_tickets_q3.csv --analysis-type diagnostics --model-provider azure
+
+# Both Analyses with Azure OpenAI
+python main.py --input input_tickets_sample.csv --analysis-type both --model-provider azure
 ```
 
 ### CLI Parameters
@@ -107,6 +145,22 @@ python main.py --input input_tickets_sample.csv --analysis-type both
   - `pod`: POD categorization only
   - `diagnostics`: Diagnostics feature analysis only
   - `both`: Run both analyses in parallel (generates two separate output files)
+- `--model-provider`: **(Optional)** LLM provider to use:
+  - `gemini`: Google Gemini (default, free tier)
+  - `azure`: Azure OpenAI GPT-4o (enterprise, faster, no rate limits)
+
+### Choosing Between Gemini vs Azure OpenAI
+
+| Factor | Gemini (Default) | Azure OpenAI |
+|--------|------------------|--------------|
+| **Cost** | Free tier | Enterprise pricing |
+| **Speed** | Slower (7s delays between requests) | Faster (no artificial delays) |
+| **Rate Limits** | 10 requests/min (free tier) | Higher limits (deployment-specific) |
+| **Best For** | Small datasets (<50 tickets) | Bulk processing (100+ tickets) |
+| **Setup** | API key only | Endpoint + API key + deployment name |
+| **Quality** | Excellent | Comparable (same prompts used) |
+
+**Recommendation:** Use Gemini for quick tests, Azure for production bulk analysis.
 
 ### Input CSV Format
 
@@ -338,15 +392,22 @@ Key configuration options can be modified in `config.py`:
 
 - **Rate Limiting**:
   - `ZENDESK_MAX_CONCURRENT`: Max concurrent Zendesk API calls (default: 10)
-  - `GEMINI_MAX_CONCURRENT`: Max concurrent Gemini API calls (default: 5)
+  - `GEMINI_MAX_CONCURRENT`: Max concurrent LLM API calls (default: 5)
   - `MAX_RETRIES`: Number of retry attempts (default: 1)
   - `RETRY_DELAY_SECONDS`: Delay between retries (default: 2)
 
 - **Timeout**:
   - `REQUEST_TIMEOUT_SECONDS`: HTTP request timeout (default: 30)
 
-- **LLM Model**:
-  - `GEMINI_MODEL`: Gemini model to use (default: "gemini-2.0-flash-exp")
+- **LLM Models**:
+  - `GEMINI_MODEL`: Gemini model to use (default: "gemini-flash-latest")
+  - `DEFAULT_MODEL_PROVIDER`: Default provider (default: "gemini")
+
+- **Azure OpenAI** (configured via `.env`):
+  - `AZURE_OPENAI_ENDPOINT`: Your Azure resource endpoint
+  - `AZURE_OPENAI_API_KEY`: Your Azure API key
+  - `AZURE_OPENAI_DEPLOYMENT_NAME`: Your GPT-4o deployment name
+  - `AZURE_OPENAI_API_VERSION`: API version (default: "2024-02-01")
 
 ## Troubleshooting
 
@@ -356,17 +417,32 @@ Key configuration options can be modified in `config.py`:
    - Ensure `.env` file exists and contains valid credentials
    - Check that `.env` is in the same directory as the Python files
 
-2. **Rate Limiting Errors**
-   - Reduce `ZENDESK_MAX_CONCURRENT` or `GEMINI_MAX_CONCURRENT` in `config.py`
+2. **"GEMINI_API_KEY environment variable is not set"** (when using Gemini)
+   - Add `GEMINI_API_KEY=your_key` to `.env`
+   - Or use `--model-provider azure` if you have Azure configured
+
+3. **"AZURE_OPENAI_ENDPOINT environment variable is not set"** (when using Azure)
+   - Add all 4 Azure variables to `.env`: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`
+   - Verify endpoint URL format: `https://your-resource.openai.azure.com/`
+   - Verify deployment name matches your Azure OpenAI deployment
+
+4. **Rate Limiting Errors**
+   - **Gemini**: Free tier limited to 10 req/min → Use `--model-provider azure` for bulk processing
+   - **Zendesk**: Reduce `ZENDESK_MAX_CONCURRENT` in `config.py`
    - The application automatically retries once on failure
 
-3. **Ticket Not Found**
+5. **Ticket Not Found**
    - Verify ticket IDs in your CSV are correct
    - Check that you have access to the tickets in Zendesk
 
-4. **Synthesis Parsing Issues**
+6. **Synthesis Parsing Issues**
    - Check logs for raw LLM responses
    - Some tickets may have incomplete synthesis if LLM response format varies
+
+7. **Azure OpenAI Errors**
+   - **"ResourceNotFound"**: Check deployment name is correct (not model name)
+   - **"InvalidApiKey"**: Verify Azure API key in `.env`
+   - **"Unauthorized"**: Check API key permissions in Azure portal
 
 ### Debug Mode
 
@@ -383,7 +459,10 @@ The application consists of modular components:
 - **config.py**: Configuration and constants
 - **utils.py**: Utilities (logging, timezone, HTML stripping)
 - **fetcher.py**: Zendesk API client with rate limiting
-- **synthesizer.py**: Gemini LLM client with response parsing
+- **synthesizer.py**: LLM client with response parsing (supports both providers)
+- **diagnostics_analyzer.py**: Diagnostics analysis module (supports both providers)
+- **categorizer.py**: POD categorization module
+- **llm_provider.py**: LLM provider abstraction layer (factory pattern for Gemini/Azure)
 
 For detailed architecture documentation, see [plan.md](plan.md).
 

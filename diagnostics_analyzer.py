@@ -5,7 +5,8 @@ This module analyzes synthesized tickets to determine:
 1. Was Diagnostics feature used? (by customer OR support team)
 2. Could Diagnostics have helped? (to diagnose OR resolve the issue)
 
-Uses Gemini LLM with Whatfix Diagnostics product knowledge to make these assessments.
+Phase 3c: Multi-Model Support
+Uses LLM provider abstraction (Gemini or Azure OpenAI) with Whatfix Diagnostics product knowledge.
 """
 
 import asyncio
@@ -14,31 +15,43 @@ import json
 import re
 from typing import Dict, List, Optional, Callable
 
-import google.generativeai as genai
-
 import config
 import utils
+from llm_provider import LLMProviderFactory
 
 
 class DiagnosticsAnalyzer:
     """
-    Async Diagnostics analyzer using Gemini LLM.
+    Async Diagnostics analyzer using LLM provider abstraction.
 
+    Phase 3c: Now supports both Gemini and Azure OpenAI via LLMProviderFactory.
     Analyzes ticket synthesis to assess Diagnostics feature applicability,
     considering both custom field data and ticket content.
     """
 
-    def __init__(self):
-        """Initialize Diagnostics analyzer with Gemini configuration."""
-        self.logger = logging.getLogger("ticket_summarizer.diagnostics_analyzer")
+    def __init__(self, model_provider: str = "gemini"):
+        """
+        Initialize Diagnostics analyzer with specified LLM provider.
 
-        # Configure Gemini API
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(config.GEMINI_MODEL)
+        Args:
+            model_provider: LLM provider name ("gemini" or "azure")
+                           Defaults to "gemini" for backward compatibility
+
+        Raises:
+            ValueError: If provider credentials are missing or invalid
+        """
+        self.logger = logging.getLogger("ticket_summarizer.diagnostics_analyzer")
+        self.model_provider = model_provider
+
+        # Initialize LLM provider using factory pattern
+        self.logger.info(f"Initializing Diagnostics analyzer with model provider: {model_provider}")
+        self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
         # Rate limiting: sequential processing for free tier
         self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
         self.request_delay = config.GEMINI_REQUEST_DELAY
+
+        self.logger.info(f"Diagnostics analyzer initialized with {model_provider} provider")
 
     async def analyze_ticket(self, ticket_data: Dict) -> Dict:
         """
@@ -80,10 +93,10 @@ class DiagnosticsAnalyzer:
                     custom_field_value=custom_field_value
                 )
 
-                # Call Gemini API
-                self.logger.debug(f"Calling Gemini API for ticket {ticket_id}")
+                # Call LLM API (via provider abstraction)
+                self.logger.debug(f"Calling LLM API for ticket {ticket_id}")
                 response = await asyncio.to_thread(
-                    self.model.generate_content, prompt
+                    self.llm_client.generate_content, prompt
                 )
 
                 # Parse response
