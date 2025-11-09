@@ -1,0 +1,55 @@
+Terminology,Definition,Pod
+AC reviewer,AI based code reviewer to validate and flag errors in AC Code,Labs
+AI Assistant,Automates workflow steps using AI.,Labs
+AI-powered element detection,Element Detection enhancements and incorporation of AI,WFE
+Analytics,"the Product Analytics module within Whatfix, covering dashboards, trends, funnels, user journeys, etc., that provides usage insights and performance tracking via charts and KPIs.",Analytics
+Ask Whatfix AI,natural-language interface to query analytics in plain English.,Insights
+Auto Testing,"A premium scheduler that spins up Chrome, runs every Flow on the target app after each release, flags step failures and emails a report so broken guidance is fixed before users see it.",CMM
+Auto Translations,"allows content authors to automatically translate Whatfix content (Flows, Smart Tips, Articles, Surveys) using the Whatfix UI. The translation happens only for text, not media, using Microsoft Machine Translation Services.",CMM
+Autocapture,"Refers to automatic capturing of in-app interactions like clicks and navigation, feeding into analytics.",Capture
+Automation,Automating widget behaviour without user intervention.,Guidance
+Beacons,"Animated visual cues (radial, ripple, speckle, etc.) that grab attention and announce changes or new features inside the application.",Guidance
+Blockers,"A feature that prevents users from progressing or submitting data until required steps are completed correctly, ensuring compliance and eliminating downstream errors.",Guidance
+Branching,"Lets a single Flow split into alternative paths based on user choices or conditions, guiding each user down the steps that match their scenario.",Guidance
+Canary,Canary Deployment/ Rollback strategy for UI modules.,UI Platform
+CLM,"The dedicated CLM Dashboard tracks every asset across Draft, Ready and Production stages, P2P, Stage movement, archiving content and folders.",CMM
+Cohorts,Dynamic or static groups of users used to compare behaviour across features and time.,Insights
+Content Aggregation,"A Whatfix web-crawler that connects external repositories (SharePoint, Confluence, etc.), indexes them and makes deep search results instantly available inside Hub widgets.",Hub
+Content Repository,"A mechanism for integrating external knowledge bases (like Confluence, SharePoint) via Whatfix Content Aggregation, creating repository links on the Dashboard that end users can access as contextual search results.",Hub
+DAP on OS,"Hub (the “DAP on OS” widget) pins to a user’s desktop and collapses into three end-user workspaces: Explorer (searchable content library), Tasks (personal to-do list), and Feedback (two-way communication to authors). It centralizes cross-app guidance in one floating launcher.",Hub
+Desktop,"A lightweight layer that sits on top of native desktop applications (SAP GUI, Microsoft Teams, Java apps, etc.) and injects the same in-app help you see on the web, Flows, Pop-ups, Beacons, Task Lists, and more.",Desktop
+Diagnostics,Real-time panel that inspects steps/widgets and shows actionable fixes.,WFE
+Element Detection/CSS,Issues with element detection or CSS/XPath selectors in Workflow Engine.,WFE
+Enterprise Insights,enabling organization-level insight dashboards and metrics.,Insights
+Enterprise Search,Search across the knowledge bases.,Labs
+Event groups,grouping of related user events into logical categories for segmentation or funneling within Analytics.,Insights
+Flows,"A step-by-step, on-screen walkthrough that overlays your web app to teach users how to complete a task or achieve an objective.",Guidance
+Funnels,Multi‑step visualisation measuring conversion/drop‑off across a defined process.,Insights
+Integration Hub,"Whatfix’s integration platform that connects to external systems (e.g. Confluence, Workday, Amplitude) to import/export data or automate content delivery workflows.",Platform Services
+Intent Recognition,NLP that infers goals and recommends or automates ideal next actions.,Labs
+Latching,"Engine logic that pins Launchers (and similar widgets) to the exact element, accounting for resolution changes and selector uniqueness, so UI cues stay anchored.",WFE
+Launchers,"A persistent, customizable button that lets users open any Whatfix asset, Flow, Pop-up, video or link, whenever they need it, with a single click.",Guidance
+Mirror,"An application-simulation builder that captures live screens of any web app and stitches them into a hyper-realistic, interactive replica. Learners can safely practise tasks in this sandbox while authors overlay Flows, Smart Tips, Pop-ups, and track analytics, delivering hands-on training without the risks of a production system.",Mirror
+Mobile,Mobile‑specific product (iOS/Android deployments).,Mobile
+Multiformat,"Refers to exporting Whatfix Flows and Smart Tips into multiple formats, such as videos, slideshows, articles, PDFs, and ODF, to support diverse consumption and delivery needs.",Guidance
+Nudge,"A tool used in Task List and Self Help to automatically prompt users, for example, opening a task list or showing a tooltip, based on predefined usage thresholds or inactivity conditions.",Hub
+P2P,"is the process of publishing Whatfix content and widgets (such as Flows, Smart Tips, Beacons, styles, and repository links) from the Ready stage to the Production stage so it becomes live and visible to end users.",CMM
+Pop-up,"An on-screen modal/card that grabs attention to announce new features, downtime, celebrations or other time-sensitive messages; can include images, GIFs, buttons or links. ",Guidance
+QuickRead,"AI-powered summaries for end-user queries, pulling short answers from Flows, Articles, and linked repositories within Self Help.",Hub
+Reselection,Requests to re‑select elements (CSS/XPath) for content latching.,WFE
+Reserved Variables,Pre‑defined variable slots used to send additional contextual data with every event.,Capture
+Smart context,"Patented context engine that auto-segments and shows only relevant content on the right page and step, even starting a Flow mid-stream if the user is already part-way through.",WFE
+Smart Tips,"Contextual tool-tips that surface extra guidance or validation exactly where it’s needed (for example, on complex form fields). They appear on hover or via an “i” icon.",Guidance
+Static Content,"Help assets (articles, links, PDFs, videos, images) created entirely in the dashboard, independent of live UI elements, for situations where you can’t capture the underlying app.",Hub
+Studio/Dashboard,"Whatfix Studio (a browser plug-in) and the redesigned dashboard share a consistent left-hand menu and grouped folders, making navigation, discovery and creation of Flows, Beacons, Surveys etc intuitive for authors.",CMM
+Surveys,"Built-in NPS, feedback or custom questionnaires shown inside the product to capture user sentiment and channel the results to analytics for insight-driven improvements.",Hub
+Tags,"Enables authors to create role, page or auto tags, bulk-apply them, filter the list view by tag, and drive segmentation and visibility rules in widgets such as Self Help and Task List.",CMM
+Task List,"A checklist widget that lists onboarding or change-management tasks, shows progress ticks as each item is done, and nudges users to complete the sequence.",Hub
+Triggers,"A rule that fires Whatfix content (e.g., Smart Tip or Flow) automatically when specific conditions in the underlying app are met, such as a value, date or user action, providing timely nudges.",Guidance
+User Actions,"Custom, user‑defined events instrumented in the Capture layer to track clicks, page views, or any specific interaction.",Capture
+User Attributes,"Key‑value metadata (role, plan, region) attached to users for segmentation in Analytics.",Capture
+User Identification,"Rules that map login identifiers (email, SSO, UUID) to a unique Analytics user ID for accurate person-level tracking.",Capture
+User Journeys,Path analysis that reveals common sequences of events taken by users.,Insights
+User Unification,Logic that merges multiple identifiers for the same person into a single analytics profile.,Capture
+Versioning,(Implicitly part of CLM) tracks different versions of content/assets in the Dashboard and enables rollbacks via staging.,CMM
+Visibility Rules,"A rule framework that decides where and when widgets or tooltips should appear, based on URL, element attributes, user segments, or behaviors, to ensure contextual relevance.",WFE

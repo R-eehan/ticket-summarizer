@@ -1,5 +1,8 @@
 """
-Gemini LLM client for synthesizing ticket summaries.
+LLM client for synthesizing ticket summaries.
+Supports multiple LLM providers (Gemini, Azure OpenAI) via factory pattern.
+
+Phase 3c: Multi-Model Support
 Implements rate limiting, retry logic, and response parsing.
 """
 
@@ -7,31 +10,42 @@ import asyncio
 import logging
 import re
 from typing import Dict, List, Optional, Callable
-import google.generativeai as genai
 
 import config
 import utils
+from llm_provider import LLMProviderFactory
 
 
 class GeminiSynthesizer:
     """
-    Async Gemini LLM client for ticket synthesis with rate limiting.
+    Async LLM client for ticket synthesis with rate limiting.
+
+    Phase 3c: Renamed from "GeminiSynthesizer" but kept class name for backward compatibility.
+    Now supports both Gemini and Azure OpenAI via LLMProviderFactory.
     """
 
-    def __init__(self):
-        """Initialize Gemini synthesizer with configuration."""
+    def __init__(self, model_provider: str = "gemini"):
+        """
+        Initialize synthesizer with specified LLM provider.
+
+        Args:
+            model_provider: LLM provider name ("gemini" or "azure")
+                           Defaults to "gemini" for backward compatibility
+
+        Raises:
+            ValueError: If provider credentials are missing or invalid
+        """
         self.logger = logging.getLogger("ticket_summarizer.synthesizer")
+        self.model_provider = model_provider
 
-        # Configure Gemini API
-        genai.configure(api_key=config.GEMINI_API_KEY)
-
-        # Initialize model
-        self.model = genai.GenerativeModel(config.GEMINI_MODEL)
+        # Initialize LLM provider using factory pattern
+        self.logger.info(f"Initializing synthesizer with model provider: {model_provider}")
+        self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
         # Rate limiting
         self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
-        self.logger.info(f"Initialized Gemini synthesizer with model: {config.GEMINI_MODEL}")
+        self.logger.info(f"Synthesizer initialized with {model_provider} provider")
 
     def format_prompt(self, ticket_data: Dict) -> str:
         """
@@ -153,16 +167,16 @@ class GeminiSynthesizer:
                 # Format the prompt
                 prompt = self.format_prompt(ticket_data)
 
-                # Call Gemini API (synchronous, but wrapped in async)
+                # Call LLM API (via provider abstraction, synchronous but wrapped in async)
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,
-                    lambda: self.model.generate_content(prompt)
+                    lambda: self.llm_client.generate_content(prompt)
                 )
 
                 # Extract response text
                 if not response or not response.text:
-                    raise utils.GeminiAPIError(f"Empty response from Gemini for ticket {ticket_id}")
+                    raise utils.GeminiAPIError(f"Empty response from LLM for ticket {ticket_id}")
 
                 response_text = response.text
                 self.logger.debug(f"Received response for ticket {ticket_id}")
@@ -175,6 +189,11 @@ class GeminiSynthesizer:
                 result["synthesis"] = synthesis
 
                 self.logger.info(f"Successfully synthesized ticket {ticket_id}")
+
+                # Add delay to respect free tier rate limits
+                if config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+
                 return result
 
             except Exception as e:

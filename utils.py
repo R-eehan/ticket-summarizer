@@ -302,3 +302,204 @@ def generate_output_filename() -> str:
     """
     date_str = datetime.now().strftime(config.OUTPUT_DATE_FORMAT)
     return f"{config.OUTPUT_FILENAME_PREFIX}{date_str}.json"
+
+
+# ============================================================================
+# CATEGORIZATION VALIDATION UTILITIES (Phase 2)
+# ============================================================================
+
+def validate_pod(pod_name: str) -> bool:
+    """
+    Validate POD name against the list of valid PODs.
+
+    Used by categorizer to ensure LLM doesn't hallucinate POD names.
+    Performs case-insensitive matching for robustness.
+
+    Args:
+        pod_name: POD name to validate (e.g., "Guidance", "WFE")
+
+    Returns:
+        True if POD name is valid, False otherwise
+
+    Example:
+        >>> validate_pod("Guidance")
+        True
+        >>> validate_pod("Invalid POD")
+        False
+        >>> validate_pod("guidance")  # Case insensitive
+        True
+    """
+    if not pod_name:
+        return False
+
+    # Case-insensitive check against valid PODs list
+    # Normalize both the input and the list for comparison
+    pod_name_normalized = pod_name.strip()
+
+    # Check exact match first (most common case)
+    if pod_name_normalized in config.VALID_PODS:
+        return True
+
+    # Check case-insensitive match
+    pod_name_lower = pod_name_normalized.lower()
+    valid_pods_lower = [p.lower() for p in config.VALID_PODS]
+
+    return pod_name_lower in valid_pods_lower
+
+
+def validate_confidence(confidence: str) -> bool:
+    """
+    Validate confidence level against allowed values.
+
+    Ensures LLM response contains valid confidence level.
+    Only two levels allowed: "confident" or "not confident"
+
+    Args:
+        confidence: Confidence level string from LLM
+
+    Returns:
+        True if confidence is valid, False otherwise
+
+    Example:
+        >>> validate_confidence("confident")
+        True
+        >>> validate_confidence("not confident")
+        True
+        >>> validate_confidence("very confident")
+        False
+    """
+    if not confidence:
+        return False
+
+    # Case-insensitive check against valid confidence levels
+    confidence_normalized = confidence.strip().lower()
+    valid_levels_lower = [c.lower() for c in config.CONFIDENCE_LEVELS]
+
+    return confidence_normalized in valid_levels_lower
+
+
+# ============================================================================
+# DIAGNOSTICS ANALYSIS UTILITIES (Phase 3b)
+# ============================================================================
+
+def normalize_diagnostics_field(raw_value: Optional[str]) -> str:
+    """
+    Normalize the raw custom field value for "Was Diagnostic Panel used?"
+
+    The Zendesk custom field (ID: 41001255923353) stores values as enum IDs:
+    - "diagnostic_yes": Diagnostics was used → maps to "Yes"
+    - "diagnostic_no": Diagnostics was NOT used → maps to "No"
+    - Any other value (null, empty, NA, etc.) → maps to "Not Applicable"
+
+    IMPORTANT: This is a Zendesk enum field, NOT a free-text field.
+    The values are stored as enum IDs (diagnostic_yes/diagnostic_no), not display strings.
+
+    Args:
+        raw_value: Raw value from Zendesk custom field (can be str, None, or empty)
+
+    Returns:
+        Normalized value: "Yes", "No", or "Not Applicable"
+
+    Example:
+        >>> normalize_diagnostics_field("diagnostic_yes")
+        'Yes'
+        >>> normalize_diagnostics_field("diagnostic_no")
+        'No'
+        >>> normalize_diagnostics_field("N/A")
+        'Not Applicable'
+        >>> normalize_diagnostics_field(None)
+        'Not Applicable'
+        >>> normalize_diagnostics_field("")
+        'Not Applicable'
+    """
+    if not raw_value:
+        return "Not Applicable"
+
+    # Strip whitespace and convert to lowercase for comparison
+    normalized = str(raw_value).strip().lower()
+
+    if not normalized:
+        return "Not Applicable"
+
+    # Map Zendesk enum IDs to display values
+    if normalized == "diagnostic_yes":
+        return "Yes"
+    elif normalized == "diagnostic_no":
+        return "No"
+    else:
+        # For any other value (NA, null, unknown, etc.), return "Not Applicable"
+        # Log a debug message (not warning) since "NA" and empty values are expected
+        logger = logging.getLogger("ticket_summarizer")
+        logger.debug(
+            f"Diagnostics custom field value '{raw_value}' is not 'diagnostic_yes' or 'diagnostic_no'. "
+            f"Marking as 'Not Applicable'."
+        )
+        return "Not Applicable"
+
+
+def validate_diagnostics_assessment(assessment: str) -> bool:
+    """
+    Validate diagnostics assessment value against allowed values.
+
+    For "could_diagnostics_help", only three values are allowed:
+    - "yes": Diagnostics could have helped
+    - "no": Diagnostics could NOT have helped
+    - "maybe": Unclear or ambiguous
+
+    Args:
+        assessment: Assessment value from LLM
+
+    Returns:
+        True if assessment is valid, False otherwise
+
+    Example:
+        >>> validate_diagnostics_assessment("yes")
+        True
+        >>> validate_diagnostics_assessment("no")
+        True
+        >>> validate_diagnostics_assessment("maybe")
+        True
+        >>> validate_diagnostics_assessment("probably")
+        False
+    """
+    if not assessment:
+        return False
+
+    # Case-insensitive check against valid assessment values
+    assessment_normalized = assessment.strip().lower()
+    valid_assessments = ["yes", "no", "maybe"]
+
+    return assessment_normalized in valid_assessments
+
+
+def validate_diagnostics_usage(usage: str) -> bool:
+    """
+    Validate diagnostics usage value against allowed values.
+
+    For "was_diagnostics_used", only three values are allowed:
+    - "yes": Diagnostics was used
+    - "no": Diagnostics was NOT used
+    - "unknown": Cannot determine from ticket synthesis
+
+    Args:
+        usage: Usage value from LLM
+
+    Returns:
+        True if usage is valid, False otherwise
+
+    Example:
+        >>> validate_diagnostics_usage("yes")
+        True
+        >>> validate_diagnostics_usage("unknown")
+        True
+        >>> validate_diagnostics_usage("maybe")
+        False
+    """
+    if not usage:
+        return False
+
+    # Case-insensitive check against valid usage values
+    usage_normalized = usage.strip().lower()
+    valid_usages = ["yes", "no", "unknown"]
+
+    return usage_normalized in valid_usages

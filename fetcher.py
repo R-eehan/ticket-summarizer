@@ -32,22 +32,23 @@ class ZendeskFetcher:
     @utils.retry_on_failure()
     async def fetch_ticket(self, session: aiohttp.ClientSession, ticket_id: str) -> Dict:
         """
-        Fetch a single ticket's metadata from Zendesk.
+        Fetch a single ticket's metadata from Zendesk, including custom fields.
 
         Args:
             session: aiohttp client session
             ticket_id: Zendesk ticket ID
 
         Returns:
-            Dictionary containing ticket data
+            Dictionary containing ticket data with custom fields
 
         Raises:
             TicketNotFoundError: If ticket doesn't exist
             ZendeskAPIError: If API call fails
         """
         async with self.semaphore:
-            url = config.ZENDESK_TICKET_URL.format(ticket_id=ticket_id)
-            self.logger.debug(f"Fetching ticket {ticket_id} from {url}")
+            # Include custom fields in the API request
+            url = f"{config.ZENDESK_TICKET_URL.format(ticket_id=ticket_id)}"
+            self.logger.debug(f"Fetching ticket {ticket_id} with custom fields from {url}")
 
             try:
                 async with session.get(url, auth=self.auth, timeout=self.timeout) as response:
@@ -147,6 +148,9 @@ class ZendeskFetcher:
             if isinstance(comments_data, Exception):
                 raise comments_data
 
+            # Parse custom fields
+            custom_fields_data = self._parse_custom_fields(ticket_data)
+
             # Process and format the data
             processed_ticket = {
                 "ticket_id": ticket_id,
@@ -158,6 +162,7 @@ class ZendeskFetcher:
                 "created_at": utils.convert_to_ist(ticket_data.get('created_at', '')),
                 "updated_at": utils.convert_to_ist(ticket_data.get('updated_at', '')),
                 "comments_count": len(comments_data),
+                "custom_fields": custom_fields_data,
                 "comments": [],
                 "processing_status": "success"
             }
@@ -217,6 +222,39 @@ class ZendeskFetcher:
 
         # Fallback to author_id
         return f"User {comment.get('author_id', 'Unknown')}"
+
+    def _parse_custom_fields(self, ticket_data: Dict) -> Dict:
+        """
+        Parse and extract custom fields from ticket data.
+
+        Args:
+            ticket_data: Raw ticket data from Zendesk API
+
+        Returns:
+            Dictionary with parsed custom field values
+        """
+        custom_fields_data = {}
+        custom_fields = ticket_data.get('custom_fields', [])
+
+        # Extract "Was Diagnostic Panel used?" field (ID: 41001255923353)
+        for field in custom_fields:
+            if field.get('id') == config.DIAGNOSTICS_CUSTOM_FIELD_ID:
+                raw_value = field.get('value', '')
+                # Normalize the value
+                normalized_value = utils.normalize_diagnostics_field(raw_value)
+                custom_fields_data['was_diagnostics_used'] = normalized_value
+                self.logger.debug(
+                    f"Parsed diagnostics custom field: raw='{raw_value}', "
+                    f"normalized='{normalized_value}'"
+                )
+                break
+
+        # Default to 'unknown' if field not found or value is empty
+        if 'was_diagnostics_used' not in custom_fields_data:
+            custom_fields_data['was_diagnostics_used'] = 'unknown'
+            self.logger.debug("Diagnostics custom field not found, defaulting to 'unknown'")
+
+        return custom_fields_data
 
     async def fetch_multiple_tickets(
         self,
