@@ -16,6 +16,9 @@
 - [ADR-008: Binary Confidence Scoring for POD Categorization](#adr-008-binary-confidence-scoring-for-pod-categorization)
 - [ADR-009: Ternary Assessment for Diagnostics Analysis](#adr-009-ternary-assessment-for-diagnostics-analysis)
 - [ADR-010: Separate Output Files for Different Analysis Types](#adr-010-separate-output-files-for-different-analysis-types)
+- [ADR-011: JIRA URL as Source of Truth for Escalation](#adr-011-jira-url-as-source-of-truth-for-escalation)
+- [ADR-012: Escalation Signal in Diagnostics Analysis Only](#adr-012-escalation-signal-in-diagnostics-analysis-only)
+- [ADR-013: Separate CSV Files Per Analysis Type](#adr-013-separate-csv-files-per-analysis-type)
 
 ---
 
@@ -1293,6 +1296,431 @@ if self.analysis_type == "both":
 
 ---
 
+## ADR-011: JIRA URL as Source of Truth for Escalation
+
+**Status**: Accepted (Phase 5)
+
+**Decision Date**: 2025-11-17
+
+**Context**:
+
+For Phase 5 (Engineering Escalation tracking), we need to determine whether a Zendesk ticket was escalated to Engineering. Two custom fields are available:
+1. **Cross Team field** (ID: 48570811421977) - Values: "cross_team_n/a" or "cross_team_succ"
+2. **JIRA Ticket URL field** (ID: 360024807472) - Contains link to JIRA ticket
+
+**Problem**: Which field should be the source of truth for escalation status?
+
+**Scenario**: Support agent creates JIRA ticket and pastes URL in Zendesk, but forgets to update Cross Team field from "N/A" to "SUCC"
+
+**Decision**:
+
+Use **JIRA Ticket URL field as the source of truth** for escalation status.
+
+**Rationale**:
+
+### Why JIRA URL Over Cross Team Field?
+
+#### 1. Concrete Evidence of Escalation
+- JIRA URL = physical link to escalation ticket (verifiable, clickable)
+- Cross Team field = just an indicator (can be out of sync)
+- If JIRA URL exists → escalation definitely happened
+- If Cross Team says "SUCC" but no URL → ambiguous (was it actually escalated?)
+
+#### 2. Handles Support Agent Forgetfulness
+**Common Workflow**:
+1. Support agent identifies product bug
+2. Creates JIRA ticket in Engineering backlog
+3. Copies JIRA URL to Zendesk custom field
+4. **Forgets to update Cross Team field from "N/A" to "SUCC"**
+
+**With Cross Team as source of truth**:
+- `is_escalated = False` (incorrect - ticket WAS escalated)
+- Analytics miss this escalation
+
+**With JIRA URL as source of truth**:
+- `is_escalated = True` (correct - JIRA URL proves escalation)
+- Analytics capture all escalations
+
+#### 3. Data Consistency Logic
+
+**Implementation**:
+```python
+def determine_escalation_status(cross_team_value, jira_url):
+    # JIRA URL is source of truth
+    is_escalated = bool(jira_url and jira_url.strip() != "")
+
+    return {
+        "is_escalated": is_escalated,
+        "cross_team_status": normalize_cross_team_field(cross_team_value),  # Keep for reference
+        "jira_ticket_url": jira_url,
+        "jira_ticket_id": extract_jira_ticket_id(jira_url)
+    }
+```
+
+**Edge Cases Handled**:
+- JIRA URL exists, Cross Team = "N/A" → **is_escalated = True** (trust URL)
+- JIRA URL empty, Cross Team = "SUCC" → **is_escalated = False** (no physical evidence)
+- Both empty → **is_escalated = False** (no escalation)
+- Both populated → **is_escalated = True** (both agree)
+
+**Consequences**:
+
+### Positive Consequences
+1. ✅ **Captures All Escalations**: Doesn't miss escalations due to forgot ten field updates
+2. ✅ **Verifiable**: JIRA URL can be clicked to verify escalation actually exists
+3. ✅ **Human Error Tolerance**: Handles support agent workflow mistakes gracefully
+
+### Negative Consequences
+1. ⚠️ **Relies on URL Field Accuracy**: If support agent pastes wrong URL, escalation data is incorrect
+   - **Mitigation**: JIRA ticket ID extracted from URL can be verified manually if needed
+2. ⚠️ **Cross Team Field Becomes Secondary**: Cross Team field is stored but not used for is_escalated
+   - **Mitigation**: Still include `cross_team_status` in output for manual review/reconciliation
+
+**Alternatives Considered**:
+
+1. **Cross Team Field as Source of Truth** (rejected)
+   - **Con**: Support agents forget to update it
+   - **Con**: More likely to be out of sync than URL field
+
+2. **Both Fields Must Agree** (rejected)
+   - **Con**: Too strict - would miss valid escalations due to field sync issues
+   - **Con**: More false negatives
+
+3. **Either Field Can Indicate Escalation** (rejected)
+   - **Con**: Too loose - could have false positives (Cross Team = "SUCC" but no actual JIRA ticket)
+
+**References**:
+- [Phase 5 in implementation_plan.md](./implementation_plan.md#phase-5-engineering-escalation--csv-export)
+- [utils.py:determine_escalation_status()](../utils.py)
+
+---
+
+## ADR-012: Escalation Signal in Diagnostics Analysis Only
+
+**Status**: Accepted (Phase 5)
+
+**Decision Date**: 2025-11-17
+
+**Context**:
+
+Phase 5 adds escalation status tracking. Need to determine which LLM analysis phases should receive escalation status as input:
+- **Synthesis** (Phase 2): Distills ticket content into issue/root_cause/summary/resolution
+- **POD Categorization** (Phase 2): Assigns ticket to product domain (WFE, Guidance, etc.)
+- **Diagnostics Analysis** (Phase 3b): Assesses if Diagnostics feature was used / could have helped
+
+**Decision**:
+
+Include escalation status **ONLY in Diagnostics Analysis prompt**, NOT in Synthesis or Categorization.
+
+**Rationale**:
+
+### Why NOT in Synthesis?
+
+**Synthesis = Pure Content Distillation**
+
+**Principle**: Synthesis should objectively summarize ticket content without external metadata
+
+**Reasoning**:
+- Escalation status is **metadata ABOUT the ticket**, not content FROM the ticket
+- If ticket was escalated, the **comments already mention it**:
+  - "Logged with engineering team for investigation"
+  - "Identified as product bug, created JIRA ticket SUCC-36126"
+  - "Waiting for engineering fix"
+- Including escalation could **bias synthesis** to overemphasize severity vs actual content
+
+**Example**:
+- Ticket escalated but synthesis should still objectively describe what happened
+- Synthesis should capture "escalated to engineering" by reading comments, not from metadata injection
+
+**Verdict**: Keep synthesis metadata-free ✅
+
+### Why NOT in Categorization?
+
+**Categorization = Technical Domain Assignment**
+
+**Principle**: POD categorization is about **which team owns the functionality**, not **severity or escalation status**
+
+**Reasoning**:
+- A bug in WFE is still **WFE**, whether escalated or not
+- A bug in Guidance is still **Guidance**, whether escalated or not
+- Escalation doesn't change **which POD owns the technical domain**
+- Synthesis (issue_reported, root_cause, resolution) **already contains enough signal** about the technical area
+
+**Example**:
+- Ticket: "Smart Tip not displaying on specific page, escalated to Engineering (JIRA: SUCC-36126)"
+- **Without escalation signal**: LLM categorizes as **Guidance** (Smart Tip = Guidance functionality)
+- **With escalation signal**: LLM still categorizes as **Guidance** (escalation doesn't change ownership)
+- **Conclusion**: Escalation adds no value to categorization
+
+**Verdict**: Keep categorization domain-focused ✅
+
+### Why YES in Diagnostics Analysis?
+
+**Diagnostics Analysis = Self-Serviceability Assessment**
+
+**Principle**: Escalated tickets = product bugs that **CANNOT be self-serviced**, regardless of symptom similarity
+
+**Critical Insight** (from user):
+> "If a ticket was escalated to Engineering, that means there is a GENUINE bug in the product. Diagnostics analysis should REFLECT this nuance, don't you think?"
+
+**Reasoning**:
+
+#### 1. Prevents False Positives
+
+**Scenario**: Ticket escalated with visibility rule failure symptom
+
+**WITHOUT Escalation Signal**:
+```
+LLM Analysis:
+- Symptom: "Visibility rule not evaluating correctly"
+- LLM Assessment: "Yes, Diagnostics could help - shows rule evaluation status"
+- PROBLEM: This is a PRODUCT BUG in the rule engine, Diagnostics cannot fix it!
+```
+
+**WITH Escalation Signal**:
+```
+LLM Analysis:
+- Symptom: "Visibility rule not evaluating correctly"
+- Escalation: True (JIRA: SUCC-36126)
+- LLM Assessment: "No - escalated as product bug. Diagnostics can diagnose but cannot fix engine-level defects."
+- CORRECT: Diagnostics cannot resolve product bugs requiring code changes
+```
+
+#### 2. Distinguishes Self-Serviceable vs Product Defects
+
+**Key Distinction**:
+- **Self-Serviceable Issue**: Authoring error (wrong selector, incorrect rule logic) → Diagnostics helps
+- **Product Bug**: Engine-level defect (rule evaluator broken, renderer bug) → Diagnostics useless
+
+**Escalation = Strong Signal** that issue is product-level, not authoring-level
+
+#### 3. Real Example from Codebase
+
+**Ticket 90346** (from conversation):
+- Subject: "No Tooltip on smart tip showing again"
+- Issue: Smart Tip tooltip icon not appearing after element selection
+- Resolution: "Escalated to Engineering as known product bug affecting Bullhorn integration (JIRA: SUCC-36126)"
+
+**WITHOUT Escalation Signal**:
+- LLM might say: "Diagnostics could help - check element targeting"
+- **Incorrect**: This is a rendering engine bug, not targeting issue
+
+**WITH Escalation Signal**:
+- LLM says: "No - escalated as product bug (JIRA: SUCC-36126). Diagnostics cannot fix renderer defects."
+- **Correct**: Acknowledges product-level nature
+
+### Updated Diagnostics Prompt (Phase 5)
+
+**Added Section**:
+```python
+## TICKET DATA
+
+**ESCALATION STATUS:**
+- **Escalated to Engineering:** {is_escalated}
+- **JIRA Ticket ID:** {jira_ticket_id}
+
+## CRITICAL: Escalation Context
+
+**If this ticket was escalated to Engineering (is_escalated = True):**
+
+This indicates a **GENUINE PRODUCT BUG** requiring code-level fixes.
+
+**Analysis Guidelines:**
+1. **Default Assessment:** `could_diagnostics_help` = "no"
+   - Reasoning: "Escalated to Engineering as product bug (JIRA: {jira_ticket_id}). Diagnostics cannot resolve product-level defects."
+
+2. **Exception:** If synthesis shows Diagnostics was used to IDENTIFY the bug → "maybe"
+   - Reasoning: "Diagnostics helped diagnose but could not resolve (JIRA: {jira_ticket_id})."
+```
+
+**Consequences**:
+
+### Positive Consequences
+1. ✅ **Accurate Diagnostics Assessment**: No false positives for product bugs
+2. ✅ **CSV Column Correlation**: Strong correlation between `is_escalated=TRUE` and `could_diagnostics_help=no`
+3. ✅ **Business Insights**: Can calculate:
+   - "X% of escalated tickets could NOT have been solved with Diagnostics" (validates Diagnostics scope)
+   - "Y% of non-escalated troubleshooting tickets could have used Diagnostics" (missed self-service opportunities)
+
+### Negative Consequences
+1. ⚠️ **Prompt Complexity**: Diagnostics prompt becomes longer (added escalation logic)
+   - **Mitigation**: Complexity is necessary for accuracy, well-documented in prompt
+2. ⚠️ **Dependence on Escalation Field Accuracy**: If escalation field is wrong, diagnostics assessment is wrong
+   - **Mitigation**: ADR-011 (JIRA URL as source of truth) minimizes field inaccuracy
+
+**Alternatives Considered**:
+
+1. **Include Escalation in All Phases** (rejected)
+   - **Con**: Synthesis becomes biased, categorization unchanged by escalation
+   - **Con**: Only diagnostics benefits from escalation signal
+
+2. **Exclude Escalation from All Phases** (rejected)
+   - **Con**: Diagnostics produces false positives on product bugs
+   - **Con**: User explicitly requested escalation signal in diagnostics
+
+3. **Create Separate "Escalation Analysis" Phase** (rejected)
+   - **Con**: Over-engineered, escalation is just one input to diagnostics
+   - **Con**: Adds unnecessary complexity
+
+**References**:
+- [Phase 5 in implementation_plan.md](./implementation_plan.md#phase-5-engineering-escalation--csv-export)
+- [config.py:DIAGNOSTICS_ANALYSIS_PROMPT](../config.py)
+
+---
+
+## ADR-013: Separate CSV Files Per Analysis Type
+
+**Status**: Accepted (Phase 5)
+
+**Decision Date**: 2025-11-17
+
+**Context**:
+
+Phase 5 adds CSV export for Google Sheets analysis. Need to decide CSV output structure:
+1. **Single CSV with all columns** (POD + Diagnostics + Escalation)
+2. **Separate CSVs per analysis type** (POD CSV, Diagnostics CSV)
+
+**User Requirement**:
+> "For both categorizer & diagnostics analysis outputs, I need a clean CSV version that is exported after each run. The CSV columns should reflect the individual ticket IDs and the corresponding analysis done."
+
+**Decision**:
+
+Generate **separate CSV files per analysis type**:
+- POD Categorization: `output_pod_YYYYMMDD_HHMMSS.csv`
+- Diagnostics Analysis: `output_diagnostics_YYYYMMDD_HHMMSS.csv`
+
+**Rationale**:
+
+### Why Separate CSVs?
+
+#### 1. Different Stakeholders
+
+**POD Categorization CSV**:
+- **Audience**: Product managers, support categorization teams
+- **Use Case**: Verify POD assignments, review low-confidence tickets
+- **Key Columns**: `primary_pod`, `categorization_reasoning`, `confidence`, `alternative_pods`
+
+**Diagnostics Analysis CSV**:
+- **Audience**: Diagnostics feature team, product analytics
+- **Use Case**: Track Diagnostics usage, identify missed self-service opportunities
+- **Key Columns**: `was_diagnostics_used_llm_assessment`, `could_diagnostics_help_assessment`, `diagnostics_capabilities_matched`
+
+**Benefit**: Each team gets focused CSV with only relevant columns
+
+#### 2. Different Column Structures
+
+**POD CSV**: 21 columns
+- Ticket metadata, escalation, synthesis, **categorization-specific** (primary_pod, reasoning, alternatives)
+
+**Diagnostics CSV**: 26 columns
+- Ticket metadata, escalation, synthesis, **diagnostics-specific** (was_used, could_help, capabilities, ticket_type)
+
+**Combined CSV**: 37+ columns
+- **Problem**: Too wide, hard to navigate in Google Sheets
+- **Problem**: Many empty/NA columns depending on analysis type run
+
+#### 3. Google Sheets Usability
+
+**Separate CSVs**:
+- POD CSV: 21 columns → fits in spreadsheet viewport
+- Diagnostics CSV: 26 columns → fits in spreadsheet viewport
+- Easy to scan, filter, sort
+
+**Combined CSV**:
+- 37+ columns → requires horizontal scrolling
+- Cluttered with NA values in columns not relevant to analysis type
+- Harder to share with stakeholders (too much noise)
+
+#### 4. Mirrors JSON Output Structure
+
+**Existing Pattern** (Phase 3b):
+- POD analysis: `output_pod_YYYYMMDD_HHMMSS.json`
+- Diagnostics analysis: `output_diagnostics_YYYYMMDD_HHMMSS.json`
+- Separate files already established
+
+**Consistency**: CSV structure mirrors JSON structure
+
+### Implementation
+
+```python
+# csv_exporter.py
+class CSVExporter:
+    def export_pod_categorization(self, tickets, output_path):
+        fieldnames = [
+            "ticket_id", "serial_no", "url", "subject", "status",
+            "created_at", "comments_count",
+            # Escalation columns
+            "is_escalated", "jira_ticket_id", "jira_ticket_url",
+            # Synthesis columns
+            "issue_reported", "root_cause", "summary", "resolution",
+            # POD categorization columns
+            "primary_pod", "categorization_reasoning", "confidence",
+            "alternative_pods", "alternative_reasoning",
+            "processing_status", "error"
+        ]
+        # ... write CSV ...
+
+    def export_diagnostics_analysis(self, tickets, output_path):
+        fieldnames = [
+            "ticket_id", "serial_no", "url", "subject", "status",
+            "created_at", "comments_count",
+            # Escalation columns
+            "is_escalated", "jira_ticket_id", "jira_ticket_url",
+            # Synthesis columns
+            "issue_reported", "root_cause", "summary", "resolution",
+            # Diagnostics analysis columns
+            "was_diagnostics_used_custom_field",
+            "was_diagnostics_used_llm_assessment",
+            "could_diagnostics_help_assessment",
+            "diagnostics_capabilities_matched",
+            "ticket_type",
+            "processing_status", "error"
+        ]
+        # ... write CSV ...
+```
+
+**File Naming**:
+- `output_pod_20251117_143246.csv`
+- `output_diagnostics_20251117_162748.csv`
+- Timestamp makes pairing obvious if needed
+
+**Consequences**:
+
+### Positive Consequences
+1. ✅ **Clear Stakeholder Separation**: POD team gets POD CSV, Diagnostics team gets Diagnostics CSV
+2. ✅ **Google Sheets Friendly**: Each CSV fits in viewport, easy to navigate
+3. ✅ **Simpler Column Structure**: No NA/empty columns for irrelevant analysis
+4. ✅ **Consistent with JSON Pattern**: Mirrors existing separate JSON files
+
+### Negative Consequences
+1. ⚠️ **File Proliferation**: 2 CSV files instead of 1 when `--analysis-type both`
+   - **Mitigation**: Clear naming convention makes pairing obvious
+   - **Mitigation**: User requested separate CSVs per analysis type
+2. ⚠️ **Duplicate Columns**: Escalation and synthesis columns repeated in both CSVs
+   - **Mitigation**: Necessary for each CSV to be self-contained (stakeholders don't need to join files)
+
+**Alternatives Considered**:
+
+1. **Single Combined CSV** (rejected)
+   - **Con**: 37+ columns too wide for Google Sheets
+   - **Con**: Many NA columns depending on analysis type
+   - **Con**: Mixed stakeholder needs
+
+2. **Single CSV with Conditional Columns** (rejected)
+   - **Con**: Complex schema (some rows have POD columns, others have Diagnostics)
+   - **Con**: Google Sheets pivot tables harder to configure
+
+3. **Three CSVs** (Shared, POD-specific, Diagnostics-specific) (rejected)
+   - **Con**: Over-engineered, stakeholders would need to join files
+   - **Con**: User requested "clean CSV version", not multi-file joins
+
+**References**:
+- [Phase 5 in implementation_plan.md](./implementation_plan.md#csv-export-specification)
+- [csv_exporter.py](../csv_exporter.py) (to be implemented)
+- [ADR-010: Separate Output Files for Different Analysis Types](#adr-010-separate-output-files-for-different-analysis-types) (JSON precedent)
+
+---
+
 ## Document Maintenance
 
 **How to Add a New ADR**:
@@ -1334,6 +1762,6 @@ if self.analysis_type == "both":
 
 ---
 
-**Document Version**: 1.0.0
-**Last Updated**: 2025-11-09
-**Next Review**: After Phase 4 completion
+**Document Version**: 1.1.0
+**Last Updated**: 2025-11-17 (Phase 5 ADRs added)
+**Next Review**: After Phase 5 completion

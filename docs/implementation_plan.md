@@ -35,6 +35,13 @@
   - [Technical Architecture - Phase 3c](#technical-architecture---phase-3c)
   - [Technical Decisions - Phase 3c](#technical-decisions---phase-3c)
   - [Configuration Requirements](#configuration-requirements---phase-3c)
+- [Phase 5: Engineering Escalation & CSV Export](#phase-5-engineering-escalation--csv-export)
+  - [Overview](#overview-4)
+  - [Problem Statement - Phase 5](#problem-statement---phase-5)
+  - [Solution](#solution-2)
+  - [Module Updates - Phase 5](#module-updates---phase-5)
+  - [CSV Export Specification](#csv-export-specification)
+  - [Key Design Decisions - Phase 5](#key-design-decisions---phase-5)
 
 ---
 
@@ -994,11 +1001,552 @@ AZURE_OPENAI_API_VERSION=2024-02-01
 
 ---
 
+## Phase 5: Engineering Escalation & CSV Export
+
+### Overview
+
+Phase 5 adds visibility into whether Zendesk tickets have been escalated to Engineering via JIRA tickets. This applies to BOTH categorization and diagnostics analysis workflows. Additionally, implements automatic CSV export for easy analysis in Google Sheets.
+
+**Critical Insight**: Escalation status is a CRITICAL signal for diagnostics analysis - if a ticket was escalated to Engineering, it indicates a genuine product bug that cannot be self-serviced through Diagnostics, regardless of symptom similarity.
+
+### Problem Statement - Phase 5
+
+**Current Challenges:**
+- No visibility into whether tickets were escalated to Engineering
+- Cannot identify product bugs vs. self-serviceable issues
+- Diagnostics analysis may incorrectly assess escalated bugs as self-serviceable
+- JSON output difficult to analyze in spreadsheets for manual review
+
+**Business Impact:**
+- Diagnostics analysis produces false positives (suggests Diagnostics could help on product bugs)
+- Cannot track engineering escalation trends over time
+- Manual review of JSON files is cumbersome
+- Cannot easily share analysis results with non-technical stakeholders
+
+### Solution
+
+1. **Extract Escalation Custom Fields**: Read Zendesk custom fields for Cross Team status and JIRA ticket URL
+2. **Integrate Escalation Signal into Diagnostics Analysis**: LLM prompt includes escalation status to prevent false positives
+3. **Automatic CSV Export**: Generate CSV files alongside JSON for easy Google Sheets import
+
+### Module Updates - Phase 5
+
+#### 1. config.py - Escalation Custom Field IDs
+
+```python
+# ============================================================================
+# ENGINEERING ESCALATION CUSTOM FIELDS (Phase 5)
+# ============================================================================
+
+# Cross Team custom field - indicates if ticket was escalated
+# Values: "cross_team_n/a" (not escalated) or "cross_team_succ" (escalated to SUCC engineering)
+CROSS_TEAM_FIELD_ID = 48570811421977
+
+# JIRA Ticket custom field - contains link to JIRA ticket if escalated
+# Only appears in Zendesk UI if Cross Team field = "cross_team_succ"
+# Value example: "https://whatfix.atlassian.net/browse/SUCC-36126"
+JIRA_TICKET_FIELD_ID = 360024807472
+```
+
+**Updated DIAGNOSTICS_ANALYSIS_PROMPT** (add to TICKET DATA section):
+
+```python
+## TICKET DATA
+
+**Subject:** {subject}
+**Issue Reported:** {issue_reported}
+**Root Cause:** {root_cause}
+**Summary:** {summary}
+**Resolution:** {resolution}
+**Custom Field (was_diagnostics_used):** {custom_field_value}
+
+**ESCALATION STATUS:**
+- **Escalated to Engineering:** {is_escalated}
+- **JIRA Ticket ID:** {jira_ticket_id}
+
+## CRITICAL: Escalation Context
+
+**If this ticket was escalated to Engineering (is_escalated = True, JIRA ticket exists):**
+
+This indicates a **GENUINE PRODUCT BUG** requiring code-level fixes by the engineering team.
+
+Even if the issue appears to be something Diagnostics could diagnose (visibility rules, element detection, CSS selectors, step failures), if it required an engineering fix, this means it was a **product-level defect**, not an authoring/configuration issue that a user could self-service.
+
+**Analysis Guidelines for Escalated Tickets:**
+
+1. **Default Assessment:** `could_diagnostics_help` = **"no"**
+   - Reasoning: "This was escalated to Engineering as a product bug (JIRA: {jira_ticket_id}). Diagnostics cannot resolve product-level defects that require code changes by the engineering team."
+
+2. **Exception - Diagnostics Used for Identification:**
+   - If synthesis explicitly shows Diagnostics was used to IDENTIFY the bug, mark as **"maybe"**
+   - Reasoning: "Diagnostics helped diagnose the issue but could not resolve it as it required engineering intervention."
+
+3. **Confidence Level:** Escalated tickets should generally be marked as **"confident"**
+```
+
+#### 2. utils.py - Escalation Helper Functions
+
+```python
+# ============================================================================
+# ESCALATION HELPERS (Phase 5)
+# ============================================================================
+
+def normalize_cross_team_field(raw_value: Optional[str]) -> str:
+    """
+    Normalize Cross Team custom field value.
+
+    Args:
+        raw_value: Raw value from Zendesk (e.g., "cross_team_n/a", "cross_team_succ")
+
+    Returns:
+        Normalized value: "N/A", "SUCC", or "Unknown"
+    """
+    if not raw_value or raw_value == "":
+        return "Unknown"
+
+    value_lower = str(raw_value).lower().strip()
+
+    if "n/a" in value_lower or "na" in value_lower:
+        return "N/A"
+    elif "succ" in value_lower:
+        return "SUCC"
+    else:
+        return "Unknown"
+
+
+def extract_jira_ticket_id(jira_url: Optional[str]) -> Optional[str]:
+    """
+    Extract JIRA ticket ID from URL.
+
+    Args:
+        jira_url: Full JIRA URL (e.g., "https://whatfix.atlassian.net/browse/SUCC-36126")
+
+    Returns:
+        JIRA ticket ID (e.g., "SUCC-36126") or None if URL is invalid
+    """
+    if not jira_url or jira_url.strip() == "":
+        return None
+
+    try:
+        parts = jira_url.strip().split("/")
+        ticket_id = parts[-1]
+
+        # Basic validation: should contain at least one hyphen
+        if "-" in ticket_id and len(ticket_id) > 3:
+            return ticket_id
+        else:
+            return None
+    except (IndexError, AttributeError):
+        return None
+
+
+def determine_escalation_status(cross_team_value: Optional[str], jira_url: Optional[str]) -> Dict:
+    """
+    Determine escalation status based on custom field values.
+
+    Logic:
+    - JIRA ticket URL is the source of truth (handles cases where support agents
+      filled JIRA field but forgot to update Cross Team field)
+    - If JIRA URL exists and is non-empty → escalated = True
+    - Otherwise → escalated = False
+
+    Args:
+        cross_team_value: Raw Cross Team custom field value
+        jira_url: Raw JIRA Ticket custom field value
+
+    Returns:
+        Dictionary with escalation metadata
+    """
+    normalized_cross_team = normalize_cross_team_field(cross_team_value)
+    jira_ticket_id = extract_jira_ticket_id(jira_url)
+
+    # JIRA URL is source of truth for escalation status
+    is_escalated = bool(jira_url and jira_url.strip() != "")
+
+    return {
+        "is_escalated": is_escalated,
+        "cross_team_status": normalized_cross_team,
+        "jira_ticket_url": jira_url.strip() if jira_url else None,
+        "jira_ticket_id": jira_ticket_id
+    }
+```
+
+#### 3. fetcher.py - Enhanced Custom Fields Parsing
+
+**Update `_parse_custom_fields()` method**:
+
+```python
+def _parse_custom_fields(self, ticket_data: Dict) -> Dict:
+    """
+    Parse and extract custom fields from ticket data.
+
+    Returns:
+        Dictionary with parsed custom field values including escalation data
+    """
+    custom_fields_data = {}
+    custom_fields = ticket_data.get('custom_fields', [])
+
+    # Initialize variables for escalation fields
+    cross_team_value = None
+    jira_ticket_url = None
+
+    # Extract all relevant custom fields
+    for field in custom_fields:
+        field_id = field.get('id')
+        field_value = field.get('value', '')
+
+        # "Was Diagnostic Panel used?" field (existing)
+        if field_id == config.DIAGNOSTICS_CUSTOM_FIELD_ID:
+            normalized_value = utils.normalize_diagnostics_field(field_value)
+            custom_fields_data['was_diagnostics_used'] = normalized_value
+
+        # Cross Team field (Phase 5)
+        elif field_id == config.CROSS_TEAM_FIELD_ID:
+            cross_team_value = field_value
+
+        # JIRA Ticket field (Phase 5)
+        elif field_id == config.JIRA_TICKET_FIELD_ID:
+            jira_ticket_url = field_value
+
+    # Default diagnostics field if not found
+    if 'was_diagnostics_used' not in custom_fields_data:
+        custom_fields_data['was_diagnostics_used'] = 'unknown'
+
+    # Determine escalation status (Phase 5)
+    escalation_data = utils.determine_escalation_status(cross_team_value, jira_ticket_url)
+    custom_fields_data['escalation'] = escalation_data
+
+    return custom_fields_data
+```
+
+#### 4. diagnostics_analyzer.py - Pass Escalation Data to LLM
+
+**Update prompt formatting**:
+
+```python
+# Format diagnostics analysis prompt with escalation context
+formatted_prompt = config.DIAGNOSTICS_ANALYSIS_PROMPT.format(
+    subject=ticket["subject"],
+    issue_reported=synthesis.get("issue_reported", "N/A"),
+    root_cause=synthesis.get("root_cause", "N/A"),
+    summary=synthesis.get("summary", "N/A"),
+    resolution=synthesis.get("resolution", "N/A"),
+    custom_field_value=ticket.get("custom_fields", {}).get("was_diagnostics_used", "unknown"),
+    # Phase 5: Add escalation context
+    is_escalated=ticket.get("custom_fields", {}).get("escalation", {}).get("is_escalated", False),
+    jira_ticket_id=ticket.get("custom_fields", {}).get("escalation", {}).get("jira_ticket_id", "None")
+)
+```
+
+#### 5. csv_exporter.py - NEW Module
+
+```python
+"""
+CSV export functionality for ticket analysis results.
+Generates CSV files for easy analysis in Google Sheets.
+"""
+
+import csv
+import logging
+from typing import List, Dict
+
+
+class CSVExporter:
+    """Exports ticket analysis results to CSV format."""
+
+    def __init__(self):
+        self.logger = logging.getLogger("ticket_summarizer.csv_exporter")
+
+    def export_pod_categorization(self, tickets: List[Dict], output_path: str) -> None:
+        """Export POD categorization results to CSV."""
+        self.logger.info(f"Exporting POD categorization to CSV: {output_path}")
+
+        fieldnames = [
+            "ticket_id", "serial_no", "url", "subject", "status", "created_at",
+            "comments_count", "is_escalated", "jira_ticket_id", "jira_ticket_url",
+            "issue_reported", "root_cause", "summary", "resolution",
+            "primary_pod", "categorization_reasoning", "confidence",
+            "alternative_pods", "alternative_reasoning",
+            "processing_status", "error"
+        ]
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for ticket in tickets:
+                escalation = ticket.get("custom_fields", {}).get("escalation", {})
+                synthesis = ticket.get("synthesis", {})
+                categorization = ticket.get("categorization", {})
+
+                row = {
+                    "ticket_id": ticket.get("ticket_id", ""),
+                    "serial_no": ticket.get("serial_no", ""),
+                    "url": ticket.get("url", ""),
+                    "subject": ticket.get("subject", ""),
+                    "status": ticket.get("status", ""),
+                    "created_at": ticket.get("created_at", ""),
+                    "comments_count": ticket.get("comments_count", 0),
+                    "is_escalated": escalation.get("is_escalated", False),
+                    "jira_ticket_id": escalation.get("jira_ticket_id", ""),
+                    "jira_ticket_url": escalation.get("jira_ticket_url", ""),
+                    "issue_reported": synthesis.get("issue_reported", ""),
+                    "root_cause": synthesis.get("root_cause", ""),
+                    "summary": synthesis.get("summary", ""),
+                    "resolution": synthesis.get("resolution", ""),
+                    "primary_pod": categorization.get("primary_pod", ""),
+                    "categorization_reasoning": categorization.get("reasoning", ""),
+                    "confidence": categorization.get("confidence", ""),
+                    "alternative_pods": categorization.get("alternative_pods", ""),
+                    "alternative_reasoning": categorization.get("alternative_reasoning", ""),
+                    "processing_status": ticket.get("processing_status", ""),
+                    "error": ticket.get("error", "")
+                }
+
+                writer.writerow(row)
+
+    def export_diagnostics_analysis(self, tickets: List[Dict], output_path: str) -> None:
+        """Export diagnostics analysis results to CSV."""
+        self.logger.info(f"Exporting diagnostics analysis to CSV: {output_path}")
+
+        fieldnames = [
+            "ticket_id", "serial_no", "url", "subject", "status", "created_at",
+            "comments_count", "is_escalated", "jira_ticket_id", "jira_ticket_url",
+            "issue_reported", "root_cause", "summary", "resolution",
+            "was_diagnostics_used_custom_field",
+            "was_diagnostics_used_llm_assessment",
+            "was_diagnostics_used_confidence",
+            "was_diagnostics_used_reasoning",
+            "could_diagnostics_help_assessment",
+            "could_diagnostics_help_confidence",
+            "could_diagnostics_help_reasoning",
+            "diagnostics_capabilities_matched",
+            "limitation_notes", "ticket_type",
+            "processing_status", "error"
+        ]
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for ticket in tickets:
+                escalation = ticket.get("custom_fields", {}).get("escalation", {})
+                synthesis = ticket.get("synthesis", {})
+                diagnostics = ticket.get("diagnostics_analysis", {})
+                was_used = diagnostics.get("was_diagnostics_used", {})
+                could_help = diagnostics.get("could_diagnostics_help", {})
+                metadata = diagnostics.get("metadata", {})
+
+                capabilities = could_help.get("diagnostics_capability_matched", [])
+                capabilities_str = ", ".join(capabilities) if capabilities else ""
+
+                row = {
+                    "ticket_id": ticket.get("ticket_id", ""),
+                    "serial_no": ticket.get("serial_no", ""),
+                    "url": ticket.get("url", ""),
+                    "subject": ticket.get("subject", ""),
+                    "status": ticket.get("status", ""),
+                    "created_at": ticket.get("created_at", ""),
+                    "comments_count": ticket.get("comments_count", 0),
+                    "is_escalated": escalation.get("is_escalated", False),
+                    "jira_ticket_id": escalation.get("jira_ticket_id", ""),
+                    "jira_ticket_url": escalation.get("jira_ticket_url", ""),
+                    "issue_reported": synthesis.get("issue_reported", ""),
+                    "root_cause": synthesis.get("root_cause", ""),
+                    "summary": synthesis.get("summary", ""),
+                    "resolution": synthesis.get("resolution", ""),
+                    "was_diagnostics_used_custom_field": ticket.get("custom_fields", {}).get("was_diagnostics_used", ""),
+                    "was_diagnostics_used_llm_assessment": was_used.get("llm_assessment", ""),
+                    "was_diagnostics_used_confidence": was_used.get("confidence", ""),
+                    "was_diagnostics_used_reasoning": was_used.get("reasoning", ""),
+                    "could_diagnostics_help_assessment": could_help.get("assessment", ""),
+                    "could_diagnostics_help_confidence": could_help.get("confidence", ""),
+                    "could_diagnostics_help_reasoning": could_help.get("reasoning", ""),
+                    "diagnostics_capabilities_matched": capabilities_str,
+                    "limitation_notes": could_help.get("limitation_notes", ""),
+                    "ticket_type": metadata.get("ticket_type", ""),
+                    "processing_status": ticket.get("processing_status", ""),
+                    "error": ticket.get("error", "")
+                }
+
+                writer.writerow(row)
+```
+
+#### 6. main.py - Escalation Stats & CSV Export
+
+**Add escalation statistics tracking**:
+
+```python
+# Calculate escalation stats
+escalated_count = sum(
+    1 for ticket in results
+    if ticket.get("processing_status") == "success"
+    and ticket.get("custom_fields", {}).get("escalation", {}).get("is_escalated", False)
+)
+
+escalation_rate = (escalated_count / successful_count * 100) if successful_count > 0 else 0
+```
+
+**Update metadata in JSON output**:
+
+```python
+metadata = {
+    # ... existing fields ...
+    "escalation_breakdown": {
+        "total_escalated": escalated_count,
+        "total_not_escalated": successful_count - escalated_count,
+        "escalation_rate": f"{escalation_rate:.2f}%"
+    },
+    # ... existing fields ...
+}
+```
+
+**Generate CSV files automatically**:
+
+```python
+# After generating JSON output
+from csv_exporter import CSVExporter
+
+csv_exporter = CSVExporter()
+
+if analysis_type == "pod":
+    csv_path = output_json_path.replace(".json", ".csv")
+    csv_exporter.export_pod_categorization(results, csv_path)
+
+elif analysis_type == "diagnostics":
+    csv_path = output_json_path.replace(".json", ".csv")
+    csv_exporter.export_diagnostics_analysis(results, csv_path)
+
+elif analysis_type == "both":
+    pod_csv_path = output_json_path.replace("_both_", "_pod_").replace(".json", ".csv")
+    diagnostics_csv_path = output_json_path.replace("_both_", "_diagnostics_").replace(".json", ".csv")
+
+    csv_exporter.export_pod_categorization(results, pod_csv_path)
+    csv_exporter.export_diagnostics_analysis(results, diagnostics_csv_path)
+```
+
+### CSV Export Specification
+
+#### POD Categorization CSV Columns
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| `ticket_id` | Zendesk ticket ID | "90346" |
+| `serial_no` | Serial number from CSV | 1 |
+| `url` | Zendesk ticket URL | "https://whatfix.zendesk.com/agent/tickets/90346" |
+| `subject` | Ticket subject | "No Tooltip on smart tip showing again" |
+| `status` | Ticket status | "hold" |
+| `created_at` | Created timestamp (IST) | "2025-10-21T19:21:34+05:30" |
+| `comments_count` | Number of comments | 6 |
+| `is_escalated` | Escalated to Engineering | TRUE |
+| `jira_ticket_id` | JIRA ticket ID | "SUCC-36126" |
+| `jira_ticket_url` | JIRA ticket URL | "https://whatfix.atlassian.net/browse/SUCC-36126" |
+| `issue_reported` | Synthesis: Issue reported | "Smart Tip tooltip icon not appearing..." |
+| `root_cause` | Synthesis: Root cause | "Known product bug in Bullhorn integration" |
+| `summary` | Synthesis: Summary (3-4 lines) | "Customer reported persistent issue..." |
+| `resolution` | Synthesis: Resolution | "Workaround provided, engineering fix pending" |
+| `primary_pod` | Categorized POD | "Guidance" |
+| `categorization_reasoning` | Reasoning for POD choice | "Issue involves Smart Tips..." |
+| `confidence` | Confidence level | "confident" |
+| `alternative_pods` | Alternative PODs | "WFE" |
+| `alternative_reasoning` | Alternative reasoning | "Could be WFE due to..." |
+| `processing_status` | Processing status | "success" |
+| `error` | Error message (if failed) | "" |
+
+#### Diagnostics Analysis CSV Columns
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| `ticket_id` | Zendesk ticket ID | "90346" |
+| `serial_no` | Serial number from CSV | 1 |
+| ... (escalation & synthesis columns same as POD CSV) | | |
+| `was_diagnostics_used_custom_field` | Raw Zendesk field value | "Not Applicable" |
+| `was_diagnostics_used_llm_assessment` | LLM assessment | "no" |
+| `was_diagnostics_used_confidence` | LLM confidence | "confident" |
+| `was_diagnostics_used_reasoning` | LLM reasoning | "Custom field says No..." |
+| `could_diagnostics_help_assessment` | Could help assessment | "no" |
+| `could_diagnostics_help_confidence` | Could help confidence | "confident" |
+| `could_diagnostics_help_reasoning` | Could help reasoning | "Escalated to Engineering (JIRA: SUCC-36126)..." |
+| `diagnostics_capabilities_matched` | Capabilities matched (comma-separated) | "" |
+| `limitation_notes` | Limitation notes | "Product bug, Diagnostics cannot fix" |
+| `ticket_type` | Ticket type | "troubleshooting" |
+| `processing_status` | Processing status | "success" |
+| `error` | Error message (if failed) | "" |
+
+### Key Design Decisions - Phase 5
+
+#### 1. JIRA URL as Source of Truth
+
+**Decision**: Use JIRA ticket URL field as source of truth for escalation status (not Cross Team field)
+
+**Rationale**:
+- Handles support agent forgetfulness (filled JIRA URL but forgot to update Cross Team field)
+- JIRA URL is concrete evidence of escalation
+- Cross Team field is just an indicator, URL is the actual link
+
+**Implementation**:
+```python
+is_escalated = bool(jira_url and jira_url.strip() != "")
+```
+
+See [ADR-011 in architecture_decisions.md](./architecture_decisions.md#adr-011-jira-url-as-source-of-truth-for-escalation)
+
+#### 2. Escalation Signal in Diagnostics Analysis ONLY
+
+**Decision**: Include escalation status in diagnostics analysis prompt, but NOT in synthesis or categorization
+
+**Rationale**:
+- **Synthesis**: Should be pure content distillation, escalation appears naturally in comments
+- **Categorization**: POD assignment is domain-based, not severity-based
+- **Diagnostics**: CRITICAL signal - escalated tickets = product bugs that cannot be self-serviced
+
+**Example Impact**:
+- Ticket escalated with "visibility rule failure" symptom
+- WITHOUT escalation signal: LLM says "Diagnostics could help - shows rule evaluation"
+- WITH escalation signal: LLM says "No - escalated as product bug, Diagnostics cannot fix engine-level defects"
+
+See [ADR-012 in architecture_decisions.md](./architecture_decisions.md#adr-012-escalation-signal-in-diagnostics-analysis-only)
+
+#### 3. Separate CSV Files Per Analysis Type
+
+**Decision**: Generate separate CSV files for POD and diagnostics analyses (not combined)
+
+**Rationale**:
+- Different stakeholders (POD team vs Diagnostics team)
+- Different column structures (categorization metadata vs diagnostics metadata)
+- Cleaner, more focused CSVs for Google Sheets import
+
+**File Naming**:
+- POD: `output_pod_20251117_143246.csv`
+- Diagnostics: `output_diagnostics_20251117_162748.csv`
+
+See [ADR-013 in architecture_decisions.md](./architecture_decisions.md#adr-013-separate-csv-files-per-analysis-type)
+
+#### 4. Automatic CSV Generation (No CLI Flag)
+
+**Decision**: Always generate CSV alongside JSON (no `--export-csv` flag)
+
+**Rationale**:
+- Maximum flexibility - users have both formats
+- CSV generation is fast (negligible overhead)
+- Removes decision fatigue (no need to remember flag)
+
+#### 5. Plain Text URLs in CSV (Not Excel Formulas)
+
+**Decision**: Store URLs as plain text, not Excel `HYPERLINK()` formulas
+
+**Rationale**:
+- Simpler, works everywhere (Excel, Google Sheets, Numbers)
+- Users can convert to hyperlinks in Sheets if needed
+- No encoding issues
+
+---
+
 ## Future Enhancements
 
-Based on Phases 1-3c foundation:
+Based on Phases 1-5 foundation:
 
-### Phase 4: Observability & Instrumentation
+### Phase 4: Observability & Instrumentation (Parked)
 
 See [instrumentation_plan.md](./instrumentation_plan.md) for complete Phase 4 details:
 - LLM tracing & monitoring (Arize Phoenix, Langfuse OSS)
@@ -1006,9 +1554,9 @@ See [instrumentation_plan.md](./instrumentation_plan.md) for complete Phase 4 de
 - Experimentation platform integration
 - Evaluation pipelines
 
-### Phase 5: Web UI
+### Phase 6: Web UI
 
-Based on Phase 2 & 3b JSON output structure:
+Based on Phase 2, 3b, & 5 output structure (JSON + CSV):
 
 1. **Review Interface**: Display synthesis + categorization/diagnostics for human review
 2. **Confidence Filtering**: Filter tickets by confidence level
@@ -1034,6 +1582,9 @@ Based on Phase 2 & 3b JSON output structure:
 
 ---
 
-**Last Updated:** 2025-11-09 (Phase 3c completed)
+**Last Updated:** 2025-11-17 (Phase 5 in progress)
 
-**Next Steps:** See [instrumentation_plan.md](./instrumentation_plan.md) for Phase 4 observability implementation.
+**Next Steps:**
+- Complete Phase 5 implementation (Engineering Escalation & CSV Export)
+- Resume Phase 4 observability instrumentation (currently parked)
+- See [instrumentation_plan.md](./instrumentation_plan.md) for Phase 4 details
