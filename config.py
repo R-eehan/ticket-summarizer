@@ -337,6 +337,7 @@ Diagnostics is a self-serviceable troubleshooting tool available within Whatfix 
 - CSS selector construction/generation (technical request requiring support)
 - CSS selector addition requests or identification of CSS selector need by the support team
 - Tooltip latching issues - smart tips, beacons, blockers, launchers not anchoring or latching to the intended element
+- Automated step execution in flow steps or smart tips not working or completing as expected
 - Feature requests for new product capabilities
 - Application-side bugs (not Whatfix-related)
 - Data migration or bulk operations
@@ -386,7 +387,7 @@ Analyze the ticket synthesis and determine:
 ### Step 2: Could Diagnostics Have Helped?
 - Identify the issue type:
   - **Troubleshooting issue?** (content not working, rules failing, elements not found) → Likely "yes" or "maybe"
-  - **Technical request?** (help create or add selector, configure integration, tips/beacons/launchers/blockers/user actions not latching correctly) → Likely "no"
+  - **Technical request?** (help create or add selector, configure integration, tips/beacons/launchers/blockers/user actions not latching correctly, automated step execution in flow steps or smart tips not working or completing as expected) → Likely "no"
   - **Feature request?** (new capability request) → "no"
   - **Product knowledge question?** (knowledge or how to questions) → "no"
 
@@ -396,6 +397,7 @@ Analyze the ticket synthesis and determine:
   - Element not found → "yes" (Diagnostics shows targeting issues)
   - CSS selector not working → "yes" (Diagnostics shows CSS failures)
   - CSS selector construction or latching related issues → "no" (Diagnostics doesn't generate selectors or detect latching issues)
+  - Automated step execution in flow steps or smart tips not working or completing as expected → "no" (Diagnostics can only show that the automated step failed but cannot tell you why the automated step failed if it's due to application-side issues)
   - Generic "content not working" → "maybe" (need more context)
 
 - Confidence:
