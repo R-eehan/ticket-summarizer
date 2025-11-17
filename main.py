@@ -29,6 +29,7 @@ from fetcher import ZendeskFetcher
 from synthesizer import GeminiSynthesizer
 from categorizer import TicketCategorizer
 from diagnostics_analyzer import DiagnosticsAnalyzer
+from instrumentation import setup_instrumentation
 
 
 class TicketSummarizer:
@@ -889,6 +890,10 @@ def main():
     """
     Main entry point for the CLI application with argparse support.
     """
+    # Phase 4: Setup Arize AX observability instrumentation
+    # Must be called BEFORE any LLM/API calls to capture all traces
+    setup_instrumentation()
+
     # Set up argument parser
     parser = argparse.ArgumentParser(
         description="Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro",

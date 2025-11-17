@@ -58,6 +58,17 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 DEFAULT_MODEL_PROVIDER = "gemini"
 
 # ============================================================================
+# ARIZE AX CONFIGURATION (Phase 4: Observability)
+# ============================================================================
+
+ARIZE_SPACE_ID = os.getenv("ARIZE_SPACE_ID")
+ARIZE_API_KEY = os.getenv("ARIZE_API_KEY")
+ARIZE_PROJECT_NAME = os.getenv("ARIZE_PROJECT_NAME", "ticket-analysis")
+
+# Note: Instrumentation is optional. If credentials are not provided,
+# the application will run without observability tracing.
+
+# ============================================================================
 # RATE LIMITING CONFIGURATION
 # ============================================================================
 

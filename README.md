@@ -27,13 +27,22 @@ A terminal-based application that fetches Zendesk support tickets, uses AI (Goog
 - Identifies missed opportunities for self-service resolution
 - Provides detailed reasoning and matched Diagnostics capabilities
 
-### Phase 3c: Multi-Model LLM Support (NEW)
+### Phase 3c: Multi-Model LLM Support
 - **Choose Your AI Provider**: Switch between Google Gemini (free tier) or Azure OpenAI GPT-4o (enterprise)
 - **Cost Optimization**: Use Azure to avoid free-tier rate limits for bulk processing
 - **No Performance Degradation**: Azure processes faster without artificial delays
 - **Backward Compatible**: Defaults to Gemini, existing workflows unchanged
 - **Simple CLI Flag**: `--model-provider azure` or `--model-provider gemini`
 - Same analysis quality across both providers (identical prompts, consistent outputs)
+
+### Phase 4: Arize AX Observability (NEW)
+- **LLM Tracing**: Automatic capture of all Gemini and Azure OpenAI API calls with token usage, latency, and costs
+- **Cloud-Based**: No self-hosted infrastructure required - traces sent to Arize AX cloud
+- **Performance Monitoring**: Track request latency, error rates, and throughput in real-time
+- **Search & Analysis**: Filter traces by ticket ID, model, timeframe, or custom attributes
+- **Optional**: Application runs normally without tracing if credentials not configured
+- **Three-Tier Instrumentation**: LLM auto-instrumentation, HTTP client tracing, business logic spans (future)
+- See [docs/arize_ax_setup.md](docs/arize_ax_setup.md) for setup instructions
 
 ### General Features
 - **Flexible Analysis Modes**: Choose POD categorization, Diagnostics analysis, or both in parallel
@@ -47,11 +56,12 @@ A terminal-based application that fetches Zendesk support tickets, uses AI (Goog
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.9 - 3.14 (tested on Python 3.12)
 - Zendesk account with API access (Enterprise plan recommended)
 - **At least one** of the following LLM providers:
   - **Google Gemini API key** (free tier, default)
   - **Azure OpenAI access** (enterprise, faster for bulk processing)
+- **Optional**: Arize AX account for LLM observability and tracing (free tier available at [arize.com](https://arize.com))
 
 ## Installation
 
@@ -408,6 +418,13 @@ Key configuration options can be modified in `config.py`:
   - `AZURE_OPENAI_API_KEY`: Your Azure API key
   - `AZURE_OPENAI_DEPLOYMENT_NAME`: Your GPT-4o deployment name
   - `AZURE_OPENAI_API_VERSION`: API version (default: "2024-02-01")
+
+- **Arize AX Observability** (Phase 4 - optional, configured via `.env`):
+  - `ARIZE_SPACE_ID`: Your Arize Space ID (from Space Settings)
+  - `ARIZE_API_KEY`: Your Arize API Key (from Space Settings → API Keys)
+  - `ARIZE_PROJECT_NAME`: Project name for grouping traces (default: "ticket-analysis")
+  - `ENABLE_TRACING`: Set to "false" to disable tracing (default: "true")
+  - See [docs/arize_ax_setup.md](docs/arize_ax_setup.md) for detailed setup instructions
 
 ## Troubleshooting
 

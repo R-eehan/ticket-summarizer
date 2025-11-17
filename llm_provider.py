@@ -15,7 +15,7 @@ import asyncio
 from typing import Dict, Any
 from openai import AzureOpenAI
 
-import google.generativeai as genai
+from google import genai
 
 import config
 import utils
@@ -155,9 +155,10 @@ class AzureOpenAIClient:
 
 class GeminiClient:
     """
-    Wrapper for Google Gemini API that maintains existing interface.
+    Wrapper for Google Gemini API using the new unified google-genai SDK.
 
-    Keeps existing Gemini functionality unchanged for backward compatibility.
+    Migrated from deprecated google-generativeai to google-genai SDK (Phase 4).
+    Maintains backward-compatible interface for seamless integration.
     """
 
     def __init__(self):
@@ -176,20 +177,20 @@ class GeminiClient:
                 "Please add it to your .env file."
             )
 
-        self.logger.info("Initializing Gemini client")
+        self.logger.info("Initializing Gemini client with new google-genai SDK")
 
-        # Configure Gemini API
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(config.GEMINI_MODEL)
+        # Initialize new unified Google GenAI client
+        self.client = genai.Client(api_key=config.GEMINI_API_KEY)
+        self.model_name = config.GEMINI_MODEL
 
-        self.logger.info(f"Gemini client initialized with model: {config.GEMINI_MODEL}")
+        self.logger.info(f"Gemini client initialized with model: {self.model_name}")
 
     def generate_content(self, prompt: str) -> Any:
         """
         Generate content using Gemini (synchronous).
 
-        Maintains exact same interface as original implementation.
-        Returns Gemini's native response object (which has .text property).
+        Uses the new google-genai SDK client.models.generate_content() API.
+        Returns response object with .text property for backward compatibility.
 
         Args:
             prompt: The prompt text to send to the LLM
@@ -201,10 +202,13 @@ class GeminiClient:
             utils.GeminiAPIError: If API call fails
         """
         try:
-            self.logger.debug(f"Calling Gemini with model: {config.GEMINI_MODEL}")
+            self.logger.debug(f"Calling Gemini with model: {self.model_name}")
 
-            # Call Gemini API (returns response with .text property)
-            response = self.model.generate_content(prompt)
+            # Call new Google GenAI SDK (returns response with .text property)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
 
             self.logger.debug(f"Gemini response received: {len(response.text)} characters")
 
