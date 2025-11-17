@@ -58,6 +58,17 @@ AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 DEFAULT_MODEL_PROVIDER = "gemini"
 
 # ============================================================================
+# ARIZE AX CONFIGURATION (Phase 4: Observability)
+# ============================================================================
+
+ARIZE_SPACE_ID = os.getenv("ARIZE_SPACE_ID")
+ARIZE_API_KEY = os.getenv("ARIZE_API_KEY")
+ARIZE_PROJECT_NAME = os.getenv("ARIZE_PROJECT_NAME", "ticket-analysis")
+
+# Note: Instrumentation is optional. If credentials are not provided,
+# the application will run without observability tracing.
+
+# ============================================================================
 # RATE LIMITING CONFIGURATION
 # ============================================================================
 
@@ -318,13 +329,14 @@ Diagnostics is a self-serviceable troubleshooting tool available within Whatfix 
 - Property mismatch (HTML properties don't match webpage elements)
 - Element detection failures
 - CSS selector failures - selectors added as part of the Visibility Rules OR Display Rules OR Element Precision rules failing during runtime
-- Step execution failures
-- Rule evaluation issues
-- Content not displaying due to targeting/visibility issues
+- Step execution failures - the next step of a flow does not show up, or the next step of a flow does not show up due to the previous step not completing
+- Content not displaying or showing up due to Visibility or Display Rule evaluation issues
 - Role tags not evaluating to true or false based on conditions applied
 
 **What Diagnostics CANNOT Help With:**
 - CSS selector construction/generation (technical request requiring support)
+- CSS selector addition requests or identification of CSS selector need by the support team
+- Tooltip latching issues - smart tips, beacons, blockers, launchers not anchoring or latching to the intended element
 - Feature requests for new product capabilities
 - Application-side bugs (not Whatfix-related)
 - Data migration or bulk operations
@@ -374,7 +386,7 @@ Analyze the ticket synthesis and determine:
 ### Step 2: Could Diagnostics Have Helped?
 - Identify the issue type:
   - **Troubleshooting issue?** (content not working, rules failing, elements not found) → Likely "yes" or "maybe"
-  - **Technical request?** (help create selector, configure integration) → Likely "no"
+  - **Technical request?** (help create or add selector, configure integration, tips/beacons/launchers/blockers/user actions not latching correctly) → Likely "no"
   - **Feature request?** (new capability request) → "no"
   - **Product knowledge question?** (knowledge or how to questions) → "no"
 
@@ -383,7 +395,7 @@ Analyze the ticket synthesis and determine:
   - Property mismatch → "yes" (Diagnostics shows property errors)
   - Element not found → "yes" (Diagnostics shows targeting issues)
   - CSS selector not working → "yes" (Diagnostics shows CSS failures)
-  - CSS selector construction → "no" (Diagnostics doesn't generate selectors)
+  - CSS selector construction or latching related issues → "no" (Diagnostics doesn't generate selectors or detect latching issues)
   - Generic "content not working" → "maybe" (need more context)
 
 - Confidence:
