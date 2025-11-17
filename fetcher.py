@@ -231,28 +231,53 @@ class ZendeskFetcher:
             ticket_data: Raw ticket data from Zendesk API
 
         Returns:
-            Dictionary with parsed custom field values
+            Dictionary with parsed custom field values including escalation data
         """
         custom_fields_data = {}
         custom_fields = ticket_data.get('custom_fields', [])
 
-        # Extract "Was Diagnostic Panel used?" field (ID: 41001255923353)
+        # Initialize variables for escalation fields (Phase 5)
+        cross_team_value = None
+        jira_ticket_url = None
+
+        # Extract all relevant custom fields
         for field in custom_fields:
-            if field.get('id') == config.DIAGNOSTICS_CUSTOM_FIELD_ID:
-                raw_value = field.get('value', '')
-                # Normalize the value
-                normalized_value = utils.normalize_diagnostics_field(raw_value)
+            field_id = field.get('id')
+            field_value = field.get('value', '')
+
+            # "Was Diagnostic Panel used?" field (existing)
+            if field_id == config.DIAGNOSTICS_CUSTOM_FIELD_ID:
+                normalized_value = utils.normalize_diagnostics_field(field_value)
                 custom_fields_data['was_diagnostics_used'] = normalized_value
                 self.logger.debug(
-                    f"Parsed diagnostics custom field: raw='{raw_value}', "
+                    f"Parsed diagnostics custom field: raw='{field_value}', "
                     f"normalized='{normalized_value}'"
                 )
-                break
 
-        # Default to 'unknown' if field not found or value is empty
+            # Cross Team field (Phase 5)
+            elif field_id == config.CROSS_TEAM_FIELD_ID:
+                cross_team_value = field_value
+                self.logger.debug(f"Parsed Cross Team field: raw='{field_value}'")
+
+            # JIRA Ticket field (Phase 5)
+            elif field_id == config.JIRA_TICKET_FIELD_ID:
+                jira_ticket_url = field_value
+                self.logger.debug(f"Parsed JIRA Ticket field: url='{field_value}'")
+
+        # Default diagnostics field if not found
         if 'was_diagnostics_used' not in custom_fields_data:
             custom_fields_data['was_diagnostics_used'] = 'unknown'
             self.logger.debug("Diagnostics custom field not found, defaulting to 'unknown'")
+
+        # Determine escalation status (Phase 5)
+        escalation_data = utils.determine_escalation_status(cross_team_value, jira_ticket_url)
+        custom_fields_data['escalation'] = escalation_data
+
+        self.logger.debug(
+            f"Escalation status: is_escalated={escalation_data['is_escalated']}, "
+            f"cross_team={escalation_data['cross_team_status']}, "
+            f"jira_id={escalation_data['jira_ticket_id']}"
+        )
 
         return custom_fields_data
 

@@ -29,6 +29,16 @@ ZENDESK_COMMENTS_URL = f"{ZENDESK_BASE_URL}/tickets/{{ticket_id}}/comments.json"
 # Zendesk Custom Field IDs
 DIAGNOSTICS_CUSTOM_FIELD_ID = 41001255923353  # "Was Diagnostic Panel used?" field
 
+# Engineering Escalation Custom Field IDs (Phase 5)
+# Cross Team field - indicates if ticket was escalated to Engineering
+# Values: "cross_team_n/a" (not escalated) or "cross_team_succ" (escalated to SUCC engineering)
+CROSS_TEAM_FIELD_ID = 48570811421977
+
+# JIRA Ticket field - contains link to JIRA ticket if escalated
+# Only appears in Zendesk UI if Cross Team field = "cross_team_succ"
+# Value example: "https://whatfix.atlassian.net/browse/SUCC-36126"
+JIRA_TICKET_FIELD_ID = 360024807472
+
 # ============================================================================
 # GEMINI CONFIGURATION
 # ============================================================================
@@ -374,6 +384,10 @@ Analyze the ticket synthesis and determine:
 **Resolution:** {resolution}
 **Custom Field (was_diagnostics_used):** {custom_field_value}
 
+**ESCALATION STATUS:**
+- **Escalated to Engineering:** {is_escalated}
+- **JIRA Ticket ID:** {jira_ticket_id}
+
 ## ANALYSIS LOGIC
 
 ### Step 1: Was Diagnostics Used?
@@ -383,6 +397,27 @@ Analyze the ticket synthesis and determine:
 - If synthesis confirms usage: "yes"
 - If synthesis contradicts custom field or shows alternative debugging (console, manual): "no"
 - If unclear: "unknown"
+
+## CRITICAL: Escalation Context (Phase 5)
+
+**If this ticket was escalated to Engineering (is_escalated = True, JIRA ticket exists):**
+
+This indicates a **GENUINE PRODUCT BUG** requiring code-level fixes by the engineering team.
+
+Even if the issue appears to be something Diagnostics could diagnose (visibility rules, element detection, CSS selectors, step failures), if it required an engineering fix, this means it was a **product-level defect**, not an authoring/configuration issue that a user could self-service.
+
+**Analysis Guidelines for Escalated Tickets:**
+
+1. **Default Assessment:** `could_diagnostics_help` = **"no"**
+   - Reasoning: "This was escalated to Engineering as a product bug (JIRA: {jira_ticket_id}). Diagnostics cannot resolve product-level defects that require code changes by the engineering team. While the symptom may resemble issues Diagnostics addresses, the root cause was beyond user control."
+
+2. **Exception - Diagnostics Used for Identification:**
+   - If synthesis explicitly shows Diagnostics was used to IDENTIFY the bug (e.g., "used Diagnostics panel to confirm rule evaluation failure, escalated as product bug"), mark as **"maybe"**
+   - Reasoning: "Diagnostics helped diagnose the issue by showing [specific capability], which enabled identification of the product bug. However, Diagnostics could not resolve the issue as it required engineering intervention (JIRA: {jira_ticket_id}). Diagnostics provided diagnostic value but not resolution value."
+
+3. **Confidence Level:**
+   - Escalated tickets should generally be marked as **"confident"** since engineering escalation is strong signal
+   - Only mark "not confident" if synthesis lacks detail about the escalation or resolution
 
 ### Step 2: Could Diagnostics Have Helped?
 - Identify the issue type:

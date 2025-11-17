@@ -101,6 +101,11 @@ class DiagnosticsAnalyzer:
                     custom_fields = ticket_data.get("custom_fields", {})
                     custom_field_value = custom_fields.get("was_diagnostics_used", "unknown")
 
+                    # Extract escalation data (Phase 5)
+                    escalation = custom_fields.get("escalation", {})
+                    is_escalated = escalation.get("is_escalated", False)
+                    jira_ticket_id = escalation.get("jira_ticket_id", "None")
+
                     # Format the prompt with ticket data
                     prompt = self._format_diagnostics_prompt(
                         subject=subject,
@@ -108,7 +113,9 @@ class DiagnosticsAnalyzer:
                         root_cause=root_cause,
                         summary=summary,
                         resolution=resolution,
-                        custom_field_value=custom_field_value
+                        custom_field_value=custom_field_value,
+                        is_escalated=is_escalated,
+                        jira_ticket_id=jira_ticket_id
                     )
 
                     # Call LLM API (via provider abstraction)
@@ -155,7 +162,9 @@ class DiagnosticsAnalyzer:
         root_cause: str,
         summary: str,
         resolution: str,
-        custom_field_value: str
+        custom_field_value: str,
+        is_escalated: bool,
+        jira_ticket_id: str
     ) -> str:
         """
         Format the Diagnostics analysis prompt with ticket data.
@@ -167,6 +176,8 @@ class DiagnosticsAnalyzer:
             summary: Summary from synthesis
             resolution: Resolution from synthesis
             custom_field_value: Normalized custom field value
+            is_escalated: Whether ticket was escalated to Engineering (Phase 5)
+            jira_ticket_id: JIRA ticket ID if escalated (Phase 5)
 
         Returns:
             Formatted prompt string
@@ -177,7 +188,9 @@ class DiagnosticsAnalyzer:
             root_cause=root_cause,
             summary=summary,
             resolution=resolution,
-            custom_field_value=custom_field_value
+            custom_field_value=custom_field_value,
+            is_escalated=is_escalated,
+            jira_ticket_id=jira_ticket_id
         )
 
     def _parse_diagnostics_response(self, response_text: str, ticket_id: str) -> Optional[Dict]:

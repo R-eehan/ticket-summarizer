@@ -29,6 +29,7 @@ from fetcher import ZendeskFetcher
 from synthesizer import GeminiSynthesizer
 from categorizer import TicketCategorizer
 from diagnostics_analyzer import DiagnosticsAnalyzer
+from csv_exporter import CSVExporter
 from instrumentation import setup_instrumentation
 
 
@@ -82,6 +83,8 @@ class TicketSummarizer:
             "diagnostics_was_used": {"yes": 0, "no": 0, "unknown": 0},
             "diagnostics_could_help": {"yes": 0, "no": 0, "maybe": 0},
             "diagnostics_confidence": {"confident": 0, "not_confident": 0},
+            # Engineering escalation stats (Phase 5)
+            "escalated_count": 0,
             "start_time": None,
             "end_time": None
         }
@@ -332,6 +335,11 @@ class TicketSummarizer:
                     if primary_pod:
                         self.stats['pod_distribution'][primary_pod] = \
                             self.stats['pod_distribution'].get(primary_pod, 0) + 1
+
+                    # Track escalation (Phase 5)
+                    escalation = result.get('custom_fields', {}).get('escalation', {})
+                    if escalation.get('is_escalated', False):
+                        self.stats['escalated_count'] += 1
                 else:
                     self.stats['categorization_failed'] += 1
 
@@ -438,6 +446,11 @@ class TicketSummarizer:
                     elif confidence == 'not confident':
                         self.stats['diagnostics_confidence']['not_confident'] += 1
 
+                    # Track escalation (Phase 5)
+                    escalation = result.get('custom_fields', {}).get('escalation', {})
+                    if escalation.get('is_escalated', False):
+                        self.stats['escalated_count'] += 1
+
                 else:
                     self.stats['diagnostics_analysis_failed'] += 1
 
@@ -490,6 +503,18 @@ class TicketSummarizer:
         # Calculate processing time
         processing_time = self.stats['end_time'] - self.stats['start_time']
 
+        # Calculate escalation statistics (Phase 5)
+        escalated_count = sum(
+            1 for ticket in tickets
+            if ticket.get("processing_status") == "success"
+            and ticket.get("custom_fields", {}).get("escalation", {}).get("is_escalated", False)
+        )
+        successful_count = sum(
+            1 for ticket in tickets
+            if ticket.get("processing_status") == "success"
+        )
+        escalation_rate = (escalated_count / successful_count * 100) if successful_count > 0 else 0
+
         # Build metadata based on analysis type
         if self.analysis_type == "pod":
             # POD categorization metadata
@@ -509,6 +534,11 @@ class TicketSummarizer:
                     "not_confident": self.stats['not_confident_count']
                 },
                 "pod_distribution": self.stats['pod_distribution'],
+                "escalation_breakdown": {
+                    "total_escalated": escalated_count,
+                    "total_not_escalated": successful_count - escalated_count,
+                    "escalation_rate": f"{escalation_rate:.2f}%"
+                },
                 "processed_at": utils.get_current_ist_timestamp(),
                 "processing_time_seconds": round(processing_time, 2)
             }
@@ -529,6 +559,11 @@ class TicketSummarizer:
                     "was_used": self.stats['diagnostics_was_used'],
                     "could_help": self.stats['diagnostics_could_help'],
                     "confidence": self.stats['diagnostics_confidence']
+                },
+                "escalation_breakdown": {
+                    "total_escalated": escalated_count,
+                    "total_not_escalated": successful_count - escalated_count,
+                    "escalation_rate": f"{escalation_rate:.2f}%"
                 },
                 "processed_at": utils.get_current_ist_timestamp(),
                 "processing_time_seconds": round(processing_time, 2)
@@ -561,6 +596,11 @@ class TicketSummarizer:
                     "was_used": self.stats['diagnostics_was_used'],
                     "could_help": self.stats['diagnostics_could_help'],
                     "confidence": self.stats['diagnostics_confidence']
+                },
+                "escalation_breakdown": {
+                    "total_escalated": escalated_count,
+                    "total_not_escalated": successful_count - escalated_count,
+                    "escalation_rate": f"{escalation_rate:.2f}%"
                 },
                 "processed_at": utils.get_current_ist_timestamp(),
                 "processing_time_seconds": round(processing_time, 2)
@@ -617,7 +657,7 @@ class TicketSummarizer:
             diag_output = output.copy()
             diag_output["metadata"]["analysis_type"] = "diagnostics"
 
-            # Save both files
+            # Save both JSON files
             with open(pod_filename, 'w', encoding='utf-8') as f:
                 json.dump(pod_output, f, indent=2, ensure_ascii=False)
             with open(diagnostics_filename, 'w', encoding='utf-8') as f:
@@ -625,6 +665,18 @@ class TicketSummarizer:
 
             self.logger.info(f"POD output saved to {pod_filename}")
             self.logger.info(f"Diagnostics output saved to {diagnostics_filename}")
+
+            # Generate CSV files (Phase 5)
+            csv_exporter = CSVExporter()
+            pod_csv_filename = pod_filename.replace(".json", ".csv")
+            diagnostics_csv_filename = diagnostics_filename.replace(".json", ".csv")
+
+            csv_exporter.export_pod_categorization(output["tickets"], pod_csv_filename)
+            csv_exporter.export_diagnostics_analysis(output["tickets"], diagnostics_csv_filename)
+
+            self.logger.info(f"POD CSV saved to {pod_csv_filename}")
+            self.logger.info(f"Diagnostics CSV saved to {diagnostics_csv_filename}")
+
             return f"{pod_filename}, {diagnostics_filename}"
         else:
             # Single file for pod or diagnostics
@@ -634,6 +686,18 @@ class TicketSummarizer:
                 json.dump(output, f, indent=2, ensure_ascii=False)
 
             self.logger.info(f"Output saved to {filename}")
+
+            # Generate CSV file (Phase 5)
+            csv_exporter = CSVExporter()
+            csv_filename = filename.replace(".json", ".csv")
+
+            if analysis_suffix == "pod":
+                csv_exporter.export_pod_categorization(output["tickets"], csv_filename)
+            elif analysis_suffix == "diagnostics":
+                csv_exporter.export_diagnostics_analysis(output["tickets"], csv_filename)
+
+            self.logger.info(f"CSV saved to {csv_filename}")
+
             return filename
 
     def display_summary(self, output_filename: str):
@@ -690,6 +754,20 @@ class TicketSummarizer:
                 for pod, count in sorted(self.stats['pod_distribution'].items()):
                     table.add_row(f"  • {pod}:", str(count))
 
+            # Escalation summary (Phase 5)
+            escalated = self.stats.get('escalated_count', 0)
+            not_escalated = self.stats['categorization_success'] - escalated
+            escalation_rate = (escalated / self.stats['categorization_success'] * 100) if self.stats['categorization_success'] > 0 else 0
+            table.add_row("Escalation Summary:", "")
+            table.add_row(
+                "  • Escalated to Engineering:",
+                f"[yellow]{escalated}[/yellow] ({escalation_rate:.2f}%)"
+            )
+            table.add_row(
+                "  • Not Escalated:",
+                f"[green]{not_escalated}[/green]"
+            )
+
         elif self.analysis_type == "diagnostics":
             # Diagnostics analysis summary
             table.add_row(
@@ -744,6 +822,20 @@ class TicketSummarizer:
                     "  • Not Confident:",
                     f"[yellow]{self.stats['diagnostics_confidence']['not_confident']}[/yellow]"
                 )
+
+            # Escalation summary (Phase 5)
+            escalated = self.stats.get('escalated_count', 0)
+            not_escalated = self.stats['diagnostics_analysis_success'] - escalated
+            escalation_rate = (escalated / self.stats['diagnostics_analysis_success'] * 100) if self.stats['diagnostics_analysis_success'] > 0 else 0
+            table.add_row("Escalation Summary:", "")
+            table.add_row(
+                "  • Escalated to Engineering:",
+                f"[yellow]{escalated}[/yellow] ({escalation_rate:.2f}%)"
+            )
+            table.add_row(
+                "  • Not Escalated:",
+                f"[green]{not_escalated}[/green]"
+            )
 
         else:  # both
             # Combined summary

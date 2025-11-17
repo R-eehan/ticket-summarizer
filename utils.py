@@ -437,6 +437,135 @@ def normalize_diagnostics_field(raw_value: Optional[str]) -> str:
         return "Not Applicable"
 
 
+# ============================================================================
+# ENGINEERING ESCALATION UTILITIES (Phase 5)
+# ============================================================================
+
+def normalize_cross_team_field(raw_value: Optional[str]) -> str:
+    """
+    Normalize Cross Team custom field value.
+
+    The Zendesk Cross Team custom field (ID: 48570811421977) indicates whether
+    a ticket was escalated to Engineering:
+    - "cross_team_n/a": Not escalated → maps to "N/A"
+    - "cross_team_succ": Escalated to SUCC engineering → maps to "SUCC"
+    - Any other value (null, empty, etc.) → maps to "Unknown"
+
+    Args:
+        raw_value: Raw value from Zendesk (e.g., "cross_team_n/a", "cross_team_succ")
+
+    Returns:
+        Normalized value: "N/A", "SUCC", or "Unknown"
+
+    Example:
+        >>> normalize_cross_team_field("cross_team_n/a")
+        'N/A'
+        >>> normalize_cross_team_field("cross_team_succ")
+        'SUCC'
+        >>> normalize_cross_team_field(None)
+        'Unknown'
+    """
+    if not raw_value or raw_value == "":
+        return "Unknown"
+
+    value_lower = str(raw_value).lower().strip()
+
+    if "n/a" in value_lower or "na" in value_lower:
+        return "N/A"
+    elif "succ" in value_lower:
+        return "SUCC"
+    else:
+        return "Unknown"
+
+
+def extract_jira_ticket_id(jira_url: Optional[str]) -> Optional[str]:
+    """
+    Extract JIRA ticket ID from URL.
+
+    Args:
+        jira_url: Full JIRA URL (e.g., "https://whatfix.atlassian.net/browse/SUCC-36126")
+
+    Returns:
+        JIRA ticket ID (e.g., "SUCC-36126") or None if URL is invalid
+
+    Example:
+        >>> extract_jira_ticket_id("https://whatfix.atlassian.net/browse/SUCC-36126")
+        'SUCC-36126'
+        >>> extract_jira_ticket_id("https://example.com/PROJ-123")
+        'PROJ-123'
+        >>> extract_jira_ticket_id("")
+        None
+    """
+    if not jira_url or jira_url.strip() == "":
+        return None
+
+    # Extract last part of URL path (after last /)
+    try:
+        parts = jira_url.strip().split("/")
+        ticket_id = parts[-1]
+
+        # Basic validation: should contain at least one hyphen (e.g., SUCC-123)
+        if "-" in ticket_id and len(ticket_id) > 3:
+            return ticket_id
+        else:
+            return None
+    except (IndexError, AttributeError):
+        return None
+
+
+def determine_escalation_status(cross_team_value: Optional[str], jira_url: Optional[str]) -> dict:
+    """
+    Determine escalation status based on custom field values.
+
+    Logic (ADR-011):
+    - JIRA ticket URL is the source of truth (handles cases where support agents
+      filled JIRA field but forgot to update Cross Team field)
+    - If JIRA URL exists and is non-empty → escalated = True
+    - Otherwise → escalated = False
+
+    Args:
+        cross_team_value: Raw Cross Team custom field value
+        jira_url: Raw JIRA Ticket custom field value
+
+    Returns:
+        Dictionary with escalation metadata:
+        {
+            "is_escalated": bool,
+            "cross_team_status": str,  # "N/A", "SUCC", or "Unknown"
+            "jira_ticket_url": str or None,
+            "jira_ticket_id": str or None  # e.g., "SUCC-36126"
+        }
+
+    Example:
+        >>> determine_escalation_status("cross_team_succ", "https://whatfix.atlassian.net/browse/SUCC-36126")
+        {
+            'is_escalated': True,
+            'cross_team_status': 'SUCC',
+            'jira_ticket_url': 'https://whatfix.atlassian.net/browse/SUCC-36126',
+            'jira_ticket_id': 'SUCC-36126'
+        }
+        >>> determine_escalation_status("cross_team_n/a", "")
+        {
+            'is_escalated': False,
+            'cross_team_status': 'N/A',
+            'jira_ticket_url': None,
+            'jira_ticket_id': None
+        }
+    """
+    normalized_cross_team = normalize_cross_team_field(cross_team_value)
+    jira_ticket_id = extract_jira_ticket_id(jira_url)
+
+    # JIRA URL is source of truth for escalation status (ADR-011)
+    is_escalated = bool(jira_url and jira_url.strip() != "")
+
+    return {
+        "is_escalated": is_escalated,
+        "cross_team_status": normalized_cross_team,
+        "jira_ticket_url": jira_url.strip() if jira_url else None,
+        "jira_ticket_id": jira_ticket_id
+    }
+
+
 def validate_diagnostics_assessment(assessment: str) -> bool:
     """
     Validate diagnostics assessment value against allowed values.
