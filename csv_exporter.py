@@ -104,6 +104,7 @@ class CSVExporter:
         self.logger.info(f"Exporting diagnostics analysis to CSV: {output_path}")
 
         # Define CSV columns (excluding 'updated_at' as per Phase 5 requirements)
+        # Phase 6: Added triage/fix/overall split assessments
         fieldnames = [
             "ticket_id",
             "serial_no",
@@ -117,15 +118,20 @@ class CSVExporter:
             "jira_ticket_url",
             "issue_reported",
             "root_cause",
+            "support_root_cause",
             "summary",
             "resolution",
             "was_diagnostics_used_custom_field",
             "was_diagnostics_used_llm_assessment",
             "was_diagnostics_used_confidence",
             "was_diagnostics_used_reasoning",
-            "could_diagnostics_help_assessment",
-            "could_diagnostics_help_confidence",
-            "could_diagnostics_help_reasoning",
+            "triage_assessment",
+            "triage_reasoning",
+            "fix_assessment",
+            "fix_reasoning",
+            "overall_assessment",
+            "overall_reasoning",
+            "diagnostics_confidence",
             "diagnostics_capabilities_matched",
             "limitation_notes",
             "ticket_type",
@@ -141,6 +147,9 @@ class CSVExporter:
                 # Extract escalation data
                 escalation = ticket.get("custom_fields", {}).get("escalation", {})
 
+                # Extract custom fields (Phase 6: includes support_root_cause)
+                custom_fields = ticket.get("custom_fields", {})
+
                 # Extract synthesis data
                 synthesis = ticket.get("synthesis", {})
 
@@ -154,7 +163,7 @@ class CSVExporter:
                 capabilities = could_help.get("diagnostics_capability_matched", [])
                 capabilities_str = ", ".join(capabilities) if capabilities else ""
 
-                # Build row
+                # Build row (Phase 6: triage/fix/overall split)
                 row = {
                     "ticket_id": ticket.get("ticket_id", ""),
                     "serial_no": ticket.get("serial_no", ""),
@@ -168,15 +177,20 @@ class CSVExporter:
                     "jira_ticket_url": escalation.get("jira_ticket_url", ""),
                     "issue_reported": synthesis.get("issue_reported", ""),
                     "root_cause": synthesis.get("root_cause", ""),
+                    "support_root_cause": custom_fields.get("support_root_cause", ""),
                     "summary": synthesis.get("summary", ""),
                     "resolution": synthesis.get("resolution", ""),
-                    "was_diagnostics_used_custom_field": ticket.get("custom_fields", {}).get("was_diagnostics_used", ""),
+                    "was_diagnostics_used_custom_field": custom_fields.get("was_diagnostics_used", ""),
                     "was_diagnostics_used_llm_assessment": was_used.get("llm_assessment", ""),
                     "was_diagnostics_used_confidence": was_used.get("confidence", ""),
                     "was_diagnostics_used_reasoning": was_used.get("reasoning", ""),
-                    "could_diagnostics_help_assessment": could_help.get("assessment", ""),
-                    "could_diagnostics_help_confidence": could_help.get("confidence", ""),
-                    "could_diagnostics_help_reasoning": could_help.get("reasoning", ""),
+                    "triage_assessment": could_help.get("triage_assessment", ""),
+                    "triage_reasoning": could_help.get("triage_reasoning", ""),
+                    "fix_assessment": could_help.get("fix_assessment", ""),
+                    "fix_reasoning": could_help.get("fix_reasoning", ""),
+                    "overall_assessment": could_help.get("overall_assessment", ""),
+                    "overall_reasoning": could_help.get("overall_reasoning", ""),
+                    "diagnostics_confidence": could_help.get("confidence", ""),
                     "diagnostics_capabilities_matched": capabilities_str,
                     "limitation_notes": could_help.get("limitation_notes", ""),
                     "ticket_type": metadata.get("ticket_type", ""),

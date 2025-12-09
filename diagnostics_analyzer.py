@@ -4,9 +4,11 @@ Diagnostics Analysis Module for Zendesk Ticket Summarizer.
 This module analyzes synthesized tickets to determine:
 1. Was Diagnostics feature used? (by customer OR support team)
 2. Could Diagnostics have helped? (to diagnose OR resolve the issue)
+   - Phase 6 Enhancement: Split into TRIAGE (identification) vs FIX (resolution) assessments
 
 Phase 3c: Multi-Model Support
 Phase 4: Added OpenTelemetry tracing (Tier 2 - Business Logic Spans)
+Phase 6: Triage vs Fix split assessment with derived overall_assessment
 Uses LLM provider abstraction (Gemini or Azure OpenAI) with Whatfix Diagnostics product knowledge.
 """
 
@@ -106,6 +108,9 @@ class DiagnosticsAnalyzer:
                     is_escalated = escalation.get("is_escalated", False)
                     jira_ticket_id = escalation.get("jira_ticket_id", "None")
 
+                    # Extract support agent's root cause (Phase 6)
+                    support_root_cause = custom_fields.get("support_root_cause", "Not provided")
+
                     # Format the prompt with ticket data
                     prompt = self._format_diagnostics_prompt(
                         subject=subject,
@@ -115,7 +120,8 @@ class DiagnosticsAnalyzer:
                         resolution=resolution,
                         custom_field_value=custom_field_value,
                         is_escalated=is_escalated,
-                        jira_ticket_id=jira_ticket_id
+                        jira_ticket_id=jira_ticket_id,
+                        support_root_cause=support_root_cause
                     )
 
                     # Call LLM API (via provider abstraction)
@@ -127,15 +133,36 @@ class DiagnosticsAnalyzer:
                     # Parse response
                     analysis_result = self._parse_diagnostics_response(response.text, ticket_id)
 
-                    # Add custom field value to the result
+                    # Add custom field value and derived overall assessment to the result
                     if analysis_result:
                         analysis_result["was_diagnostics_used"]["custom_field_value"] = custom_field_value
                         analysis_result["metadata"]["analysis_timestamp"] = utils.get_current_ist_timestamp()
 
+                        # Phase 6: Derive overall_assessment from triage + fix
+                        could_help = analysis_result.get("could_diagnostics_help", {})
+                        triage = could_help.get("triage_assessment", "maybe")
+                        fix = could_help.get("fix_assessment", "no")
+                        overall = self._derive_overall_assessment(triage, fix)
+                        analysis_result["could_diagnostics_help"]["overall_assessment"] = overall
+
+                        # Generate overall_reasoning
+                        if overall == "yes":
+                            overall_reasoning = "Diagnostics could both identify and help fix the issue."
+                        elif overall == "maybe":
+                            if triage == "yes":
+                                overall_reasoning = "Diagnostics could help identify the issue but not resolve it."
+                            else:
+                                overall_reasoning = "Partial help possible - details uncertain."
+                        else:
+                            overall_reasoning = "Diagnostics could not help with this issue."
+                        analysis_result["could_diagnostics_help"]["overall_reasoning"] = overall_reasoning
+
                     # Add span attributes for observability
                     span.set_attribute("diagnostics_analysis.success", True)
                     span.set_attribute("was_diagnostics_used", analysis_result.get("was_diagnostics_used", {}).get("llm_assessment", "unknown"))
-                    span.set_attribute("could_diagnostics_help", analysis_result.get("could_diagnostics_help", {}).get("assessment", "unknown"))
+                    span.set_attribute("triage_assessment", analysis_result.get("could_diagnostics_help", {}).get("triage_assessment", "unknown"))
+                    span.set_attribute("fix_assessment", analysis_result.get("could_diagnostics_help", {}).get("fix_assessment", "unknown"))
+                    span.set_attribute("overall_assessment", analysis_result.get("could_diagnostics_help", {}).get("overall_assessment", "unknown"))
                     span.set_attribute("response.length", len(response.text))
 
                     self.logger.info(f"Successfully analyzed ticket {ticket_id}")
@@ -164,7 +191,8 @@ class DiagnosticsAnalyzer:
         resolution: str,
         custom_field_value: str,
         is_escalated: bool,
-        jira_ticket_id: str
+        jira_ticket_id: str,
+        support_root_cause: str = "Not provided"
     ) -> str:
         """
         Format the Diagnostics analysis prompt with ticket data.
@@ -172,12 +200,13 @@ class DiagnosticsAnalyzer:
         Args:
             subject: Ticket subject
             issue_reported: Issue reported from synthesis
-            root_cause: Root cause from synthesis
+            root_cause: Root cause from synthesis (LLM-inferred)
             summary: Summary from synthesis
             resolution: Resolution from synthesis
             custom_field_value: Normalized custom field value
             is_escalated: Whether ticket was escalated to Engineering (Phase 5)
             jira_ticket_id: JIRA ticket ID if escalated (Phase 5)
+            support_root_cause: Support agent's root cause from Zendesk field (Phase 6)
 
         Returns:
             Formatted prompt string
@@ -190,20 +219,25 @@ class DiagnosticsAnalyzer:
             resolution=resolution,
             custom_field_value=custom_field_value,
             is_escalated=is_escalated,
-            jira_ticket_id=jira_ticket_id
+            jira_ticket_id=jira_ticket_id,
+            support_root_cause=support_root_cause
         )
 
     def _parse_diagnostics_response(self, response_text: str, ticket_id: str) -> Optional[Dict]:
         """
         Parse LLM response and extract diagnostics analysis in JSON format.
 
-        The LLM is expected to return a JSON structure with:
+        Phase 6 Update: The LLM now returns triage and fix assessments separately.
+        The overall_assessment is derived programmatically after parsing.
+
+        Expected JSON structure:
         - was_diagnostics_used: {llm_assessment, confidence, reasoning}
-        - could_diagnostics_help: {assessment, confidence, reasoning, diagnostics_capability_matched, limitation_notes}
+        - could_diagnostics_help: {triage_assessment, triage_reasoning, fix_assessment, fix_reasoning,
+                                   confidence, diagnostics_capability_matched, limitation_notes}
         - metadata: {ticket_type}
 
         Args:
-            response_text: Raw response from Gemini
+            response_text: Raw response from LLM
             ticket_id: Ticket ID for logging
 
         Returns:
@@ -243,6 +277,8 @@ class DiagnosticsAnalyzer:
     def _validate_analysis_structure(self, analysis_data: Dict, ticket_id: str) -> bool:
         """
         Validate the structure and values of the diagnostics analysis.
+
+        Phase 6 Update: Now validates triage_assessment and fix_assessment instead of single assessment.
 
         Checks:
         - Required fields exist
@@ -291,26 +327,43 @@ class DiagnosticsAnalyzer:
                 )
                 return False
 
-            # Validate could_diagnostics_help
+            # Validate could_diagnostics_help (Phase 6: triage + fix assessments)
             could_help = analysis_data["could_diagnostics_help"]
-            assessment = could_help.get("assessment", "").strip().lower()
 
-            if not utils.validate_diagnostics_assessment(assessment):
+            # Validate triage_assessment
+            triage_assessment = could_help.get("triage_assessment", "").strip().lower()
+            if not utils.validate_diagnostics_assessment(triage_assessment):
                 self.logger.warning(
-                    f"Invalid assessment '{assessment}' for ticket {ticket_id}. "
+                    f"Invalid triage_assessment '{triage_assessment}' for ticket {ticket_id}. "
                     f"Expected: yes, no, or maybe"
                 )
                 return False
 
-            if not utils.validate_confidence(could_help.get("confidence", "")):
+            if not could_help.get("triage_reasoning"):
                 self.logger.warning(
-                    f"Invalid confidence for could_diagnostics_help in ticket {ticket_id}"
+                    f"Empty triage_reasoning for ticket {ticket_id}"
                 )
                 return False
 
-            if not could_help.get("reasoning"):
+            # Validate fix_assessment
+            fix_assessment = could_help.get("fix_assessment", "").strip().lower()
+            if not utils.validate_diagnostics_assessment(fix_assessment):
                 self.logger.warning(
-                    f"Empty reasoning for could_diagnostics_help in ticket {ticket_id}"
+                    f"Invalid fix_assessment '{fix_assessment}' for ticket {ticket_id}. "
+                    f"Expected: yes, no, or maybe"
+                )
+                return False
+
+            if not could_help.get("fix_reasoning"):
+                self.logger.warning(
+                    f"Empty fix_reasoning for ticket {ticket_id}"
+                )
+                return False
+
+            # Validate confidence
+            if not utils.validate_confidence(could_help.get("confidence", "")):
+                self.logger.warning(
+                    f"Invalid confidence for could_diagnostics_help in ticket {ticket_id}"
                 )
                 return False
 
@@ -332,6 +385,37 @@ class DiagnosticsAnalyzer:
         except Exception as e:
             self.logger.error(f"Validation error for ticket {ticket_id}: {e}")
             return False
+
+    def _derive_overall_assessment(self, triage: str, fix: str) -> str:
+        """
+        Derive overall_assessment from triage and fix assessments.
+
+        Phase 6: Programmatic derivation ensures consistency.
+
+        Logic:
+        - triage=yes AND fix=yes → "yes" (full self-service possible)
+        - triage=yes AND fix=no/maybe → "maybe" (partial help - can identify but not fix)
+        - triage=maybe → "maybe"
+        - triage=no → "no"
+
+        Args:
+            triage: Triage assessment ("yes", "no", or "maybe")
+            fix: Fix assessment ("yes", "no", or "maybe")
+
+        Returns:
+            Overall assessment ("yes", "no", or "maybe")
+        """
+        triage = triage.strip().lower()
+        fix = fix.strip().lower()
+
+        if triage == "yes" and fix == "yes":
+            return "yes"
+        elif triage == "yes" and fix in ["no", "maybe"]:
+            return "maybe"  # Partial help - can identify but not fix
+        elif triage == "maybe":
+            return "maybe"
+        else:  # triage == "no"
+            return "no"
 
     async def analyze_multiple(
         self,

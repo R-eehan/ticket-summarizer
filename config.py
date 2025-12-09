@@ -39,6 +39,10 @@ CROSS_TEAM_FIELD_ID = 48570811421977
 # Value example: "https://whatfix.atlassian.net/browse/SUCC-36126"
 JIRA_TICKET_FIELD_ID = 360024807472
 
+# Root Cause field - support agent's documented root cause (Phase 6 Enhancement)
+# Text field, free-form, quality varies by agent. Used to ENRICH (not replace) LLM-inferred root cause
+ROOT_CAUSE_FIELD_ID = 360024846991
+
 # ============================================================================
 # GEMINI CONFIGURATION
 # ============================================================================
@@ -317,145 +321,200 @@ Provide your categorization in this EXACT format:
 [1-2 sentences explaining why alternatives were considered, or "N/A" if no alternatives]"""
 
 # ============================================================================
-# DIAGNOSTICS ANALYSIS CONFIGURATION (Phase 3b)
+# DIAGNOSTICS ANALYSIS CONFIGURATION (Phase 3b + Phase 6 Triage/Fix Enhancement)
 # ============================================================================
 
 # Diagnostics Analysis Prompt Template
-DIAGNOSTICS_ANALYSIS_PROMPT = """You are a Whatfix product expert analyzing support tickets to determine if the "Diagnostics" feature could have helped resolve or identify the issue.
+DIAGNOSTICS_ANALYSIS_PROMPT = """You are a Whatfix product expert analyzing support tickets to determine if the "Diagnostics" feature could have helped with the issue.
 
 ## WHAT IS DIAGNOSTICS?
 
-Diagnostics is a self-serviceable troubleshooting tool available within Whatfix Studio AND as a standalone entity that helps authors understand why their content fails and provides actionable guidance for resolution.
+Diagnostics is a self-serviceable troubleshooting tool within Whatfix Studio that helps authors understand why their content fails and provides actionable guidance for resolution.
 
-**Diagnostics Capabilities:**
-1. Real-time event-based step execution feedback
-2. Visibility into the "why" of a step failure
-3. Visibility into rule evaluation status for old AND advanced visibility rules
-4. Available within Studio (one-stop-shop for authoring + testing)
-5. Available as a standalone entity that can be spun up on specific user machines via a keyboard shortcut. This helps address issues where everything works on the author's machine but doesn't work on a specific end user's machine. Can help catch user specific issues
+---
 
-**What Diagnostics CAN Help With:**
-- Visibility rule failures (conditions not met, incorrect logic like OR vs AND)
-- Property mismatch (HTML properties don't match webpage elements)
-- Element detection failures
-- CSS selector failures - selectors added as part of the Visibility Rules OR Display Rules OR Element Precision rules failing during runtime
-- Step execution failures - the next step of a flow does not show up, or the next step of a flow does not show up due to the previous step not completing
-- Content not displaying or showing up due to Visibility or Display Rule evaluation issues
-- Role tags not evaluating to true or false based on conditions applied
+## CRITICAL: ANTI-HALLUCINATION RULES
 
-**What Diagnostics CANNOT Help With:**
-- CSS selector construction/generation (technical request requiring support)
-- CSS selector addition requests or identification of CSS selector need by the support team
-- Tooltip latching issues - smart tips, beacons, blockers, launchers not anchoring or latching to the intended element
-- Automated step execution in flow steps or smart tips not working or completing as expected
-- Feature requests for new product capabilities
-- Application-side bugs (not Whatfix-related)
-- Data migration or bulk operations
-- Integration setup (Confluence, Workday, etc.)
-- Performance optimization requests
-- Custom code implementation
-- Product knowledge questions such as:
-  - How do I create a flow/beacon/smart tip/blocker/launcher
-  - Branching related questions
-  - Pop-up sequencing
-  - Content movement from & across stages such as Draft/Ready/Production
-  - Deployment/delivery related questions
+**BEFORE WRITING ANY REASONING, YOU MUST FOLLOW THESE RULES:**
 
-## YOUR TASK
+1. **ONLY reference information EXPLICITLY present in the synthesis**
+   - Do NOT mention "visibility rules" unless synthesis explicitly mentions visibility rules
+   - Do NOT mention "CSS selector in display rules" unless synthesis explicitly mentions this
+   - Do NOT assume technical details not stated in the ticket
 
-Analyze the ticket synthesis and determine:
-1. **Was Diagnostics used?** (by customer OR support team)
-2. **Could Diagnostics have helped?** (to diagnose OR resolve the issue)
+2. **Use EXACT terminology from synthesis**
+   - If synthesis says "element not found" → use "element not found"
+   - Do NOT translate to "CSS selector failure" unless explicitly stated
+   - Do NOT assume "selector added" when synthesis says "selector needed"
 
-## CRITICAL INSTRUCTIONS
+3. **When uncertain, default to "maybe" with "not confident"**
+   - Better to acknowledge uncertainty than hallucinate certainty
+   - If synthesis lacks detail, say "insufficient detail" not make assumptions
 
-- Base your analysis ONLY on the synthesis summary, resolution, and custom field provided
-- DO NOT invent or assume information not present in the ticket
-- The custom field "was_diagnostics_used" may be unreliable (often "No" or "NA" even when it was used)
-- If the issue is a **technical request** (e.g., "help me create a CSS selector"), classify as "no" for "could_diagnostics_help"
-- If the issue is ambiguous or lacks detail, use "maybe" and mark confidence as "not confident"
+4. **CHECK your reasoning against the synthesis**
+   - Before outputting, verify EACH claim in your reasoning appears in the input
+   - If you cannot quote the synthesis to support a claim, remove that claim
+
+---
+
+## DIAGNOSTICS CAPABILITIES (What It CAN Detect)
+
+**Detection Capabilities (for TRIAGE):**
+
+1. **Element Detection Failures**
+   - Property mismatch (HTML properties changed/not found on page)
+   - CSS selector not found (selector added in visibility/display rules but not evaluating)
+   - Auto-tag condition failures
+
+2. **Rule Evaluation Status**
+   - Display rule conditions not met (shows WHICH conditions failed)
+   - Visibility rule conditions not met (shows rule evaluation result true/false)
+   - Role tags evaluation status
+
+3. **Content Status**
+   - **Occurrence exhausted** (widget already shown max times to user)
+   - **Precedence conflict** (another widget took priority)
+   - **Content stage** (Draft/Ready/Production) - shows which stage content evaluates from
+
+4. **Step Execution**
+   - Step completion status (passed/failed)
+   - Element-related step failures
+   - Flow step sequence issues
+
+5. **User Action Status**
+   - User Action evaluation status (found/not found)
+   - Linked content display (shows associated content when UA triggers)
+
+**Fix Recommendation Capabilities (what Diagnostics can SUGGEST):**
+- "Try reselecting the element" (for element detection failures)
+- "Increase occurrence count" (for occurrence exhausted)
+- "Check visibility rule conditions" (for rule failures)
+- "Contact support for assistance" (when issue is complex)
+
+---
+
+## DIAGNOSTICS LIMITATIONS (What It CANNOT Do)
+
+**Detection Limitations:**
+- **Latching issues** (element found but WRONG element)
+  → Diagnostics shows "element found" even if it's the WRONG element. Cannot detect incorrect latching.
+- **Branching condition failures in Flows**
+  → Diagnostics doesn't cover Flow branching logic evaluation
+- **WHY automated steps fail** (only THAT they failed)
+  → Can show step failed, cannot diagnose application-side reasons
+- **Timing issues in rule evaluation**
+  → Cannot show rules evaluated "too early" before page loaded
+
+**Fix Recommendation Limitations:**
+- **CSS selector construction/generation**
+  → Can show selector failed, CANNOT suggest what selector to use
+- **CSS selector modification**
+  → CANNOT recommend how to fix an incorrect selector
+- **Use case implementation guidance**
+  → CANNOT help with "how do I achieve X?" questions
+
+---
+
+## YOUR TASK: TRIAGE vs FIX Assessment
+
+You MUST evaluate TWO dimensions SEPARATELY:
+
+### 1. TRIAGE Assessment (Identification)
+**Question: "Could Diagnostics help the author UNDERSTAND what's failing?"**
+
+| Scenario | triage_assessment |
+|----------|------------------|
+| Issue involves visibility/display rule not evaluating | "yes" |
+| Issue involves element not being found | "yes" |
+| Issue involves step execution failure | "yes" |
+| Issue involves occurrence exhausted | "yes" |
+| Issue is pure use case implementation (no failure involved) | "no" |
+| Issue involves latching (wrong element found) | "maybe" |
+| Issue involves branching conditions in flows | "no" |
+| Unclear from synthesis | "maybe" |
+
+### 2. FIX Assessment (Resolution)
+**Question: "Could Diagnostics RECOMMEND a fix the author can self-service?"**
+
+| Scenario | fix_assessment |
+|----------|---------------|
+| Fix is "reselect element" | "yes" |
+| Fix is "increase occurrence count" | "yes" |
+| Fix is "adjust visibility rule logic" | "maybe" |
+| Fix is "add/construct CSS selector" | "no" |
+| Fix is "modify existing CSS selector" | "no" |
+| Fix requires Support intervention | "no" |
+| Fix requires Engineering escalation | "no" |
+
+**IMPORTANT:** The overall_assessment will be DERIVED programmatically. Do NOT generate it yourself.
+
+---
 
 ## TICKET DATA
 
 **Subject:** {subject}
-**Issue Reported:** {issue_reported}
-**Root Cause:** {root_cause}
+**Issue Reported (LLM-inferred):** {issue_reported}
+**Root Cause (LLM-inferred):** {root_cause}
 **Summary:** {summary}
 **Resolution:** {resolution}
 **Custom Field (was_diagnostics_used):** {custom_field_value}
+
+**Support Agent's Root Cause (from Zendesk field):** {support_root_cause}
+_Note: Use this to validate/enrich your analysis. If it differs from LLM-inferred root cause, acknowledge both._
 
 **ESCALATION STATUS:**
 - **Escalated to Engineering:** {is_escalated}
 - **JIRA Ticket ID:** {jira_ticket_id}
 
+---
+
 ## ANALYSIS LOGIC
 
 ### Step 1: Was Diagnostics Used?
-- Read the synthesis summary and resolution carefully
-- Look for explicit mentions of "Diagnostics", "diagnose panel", "diagnostic panel", "rule evaluation", "visibility status", "step failure", "CSS selector failure"
-- Check the custom field value (but don't trust it blindly - verify against synthesis)
+- Look for explicit mentions of "Diagnostics", "diagnose panel", "diagnostic panel", "rule evaluation status"
+- Check custom field value (but verify against synthesis)
 - If synthesis confirms usage: "yes"
-- If synthesis contradicts custom field or shows alternative debugging (console, manual): "no"
+- If no evidence of usage: "no"
 - If unclear: "unknown"
 
-## CRITICAL: Escalation Context (Phase 5)
+### Step 2: Triage Assessment
+- Can Diagnostics help IDENTIFY/DETECT what's failing?
+- Match issue type to detection capabilities above
+- Consider: Would seeing the diagnostic information help the author understand the problem?
 
-**If this ticket was escalated to Engineering (is_escalated = True, JIRA ticket exists):**
+### Step 3: Fix Assessment
+- Can Diagnostics RECOMMEND a fix the author can execute themselves?
+- If fix is "reselect" or "increase occurrence" → "yes"
+- If fix requires selector construction/modification → "no"
+- If fix requires support expertise → "no"
 
-This indicates a **GENUINE PRODUCT BUG** requiring code-level fixes by the engineering team.
+### Step 4: Handle Escalation Context
+**If is_escalated = True:**
+- triage_assessment: Could still be "yes" if Diagnostics could identify the issue
+- fix_assessment: Almost always "no" (product bugs need engineering fixes)
+- Note in reasoning: "Escalated as product bug - Diagnostics cannot resolve but may have helped identify"
 
-Even if the issue appears to be something Diagnostics could diagnose (visibility rules, element detection, CSS selectors, step failures), if it required an engineering fix, this means it was a **product-level defect**, not an authoring/configuration issue that a user could self-service.
+---
 
-**Analysis Guidelines for Escalated Tickets:**
+## OUTPUT STRUCTURE
 
-1. **Default Assessment:** `could_diagnostics_help` = **"no"**
-   - Reasoning: "This was escalated to Engineering as a product bug (JIRA: {jira_ticket_id}). Diagnostics cannot resolve product-level defects that require code changes by the engineering team. While the symptom may resemble issues Diagnostics addresses, the root cause was beyond user control."
-
-2. **Exception - Diagnostics Used for Identification:**
-   - If synthesis explicitly shows Diagnostics was used to IDENTIFY the bug (e.g., "used Diagnostics panel to confirm rule evaluation failure, escalated as product bug"), mark as **"maybe"**
-   - Reasoning: "Diagnostics helped diagnose the issue by showing [specific capability], which enabled identification of the product bug. However, Diagnostics could not resolve the issue as it required engineering intervention (JIRA: {jira_ticket_id}). Diagnostics provided diagnostic value but not resolution value."
-
-3. **Confidence Level:**
-   - Escalated tickets should generally be marked as **"confident"** since engineering escalation is strong signal
-   - Only mark "not confident" if synthesis lacks detail about the escalation or resolution
-
-### Step 2: Could Diagnostics Have Helped?
-- Identify the issue type:
-  - **Troubleshooting issue?** (content not working, rules failing, elements not found) → Likely "yes" or "maybe"
-  - **Technical request?** (help create or add selector, configure integration, tips/beacons/launchers/blockers/user actions not latching correctly, automated step execution in flow steps or smart tips not working or completing as expected) → Likely "no"
-  - **Feature request?** (new capability request) → "no"
-  - **Product knowledge question?** (knowledge or how to questions) → "no"
-
-- Match issue to Diagnostics capabilities:
-  - Visibility rule failures → "yes" (Diagnostics shows rule evaluation)
-  - Property mismatch → "yes" (Diagnostics shows property errors)
-  - Element not found → "yes" (Diagnostics shows targeting issues)
-  - CSS selector not working → "yes" (Diagnostics shows CSS failures)
-  - CSS selector construction or latching related issues → "no" (Diagnostics doesn't generate selectors or detect latching issues)
-  - Automated step execution in flow steps or smart tips not working or completing as expected → "no" (Diagnostics can only show that the automated step failed but cannot tell you why the automated step failed if it's due to application-side issues)
-  - Generic "content not working" → "maybe" (need more context)
-
-- Confidence:
-  - "confident" if clear match or clear non-match
-  - "not confident" if ambiguous, generic, or insufficient detail
-
-### Step 3: Output Structure
-
-Provide your analysis in the following exact JSON structure:
+Provide your analysis in this EXACT JSON structure:
 
 ```json
 {{
   "was_diagnostics_used": {{
     "llm_assessment": "yes|no|unknown",
     "confidence": "confident|not confident",
-    "reasoning": "Explain why you classified this way, referencing synthesis and custom field"
+    "reasoning": "Explain based on synthesis evidence"
   }},
   "could_diagnostics_help": {{
-    "assessment": "yes|no|maybe",
+    "triage_assessment": "yes|no|maybe",
+    "triage_reasoning": "Why Diagnostics could/couldn't help IDENTIFY the issue. Reference specific detection capabilities.",
+    "fix_assessment": "yes|no|maybe",
+    "fix_reasoning": "Why Diagnostics could/couldn't RECOMMEND a self-service fix. Be explicit about what the fix was.",
     "confidence": "confident|not confident",
-    "reasoning": "Explain why Diagnostics could/couldn't help. Be specific about which Diagnostics capability applies or why it doesn't apply. If custom field says 'No' but Diagnostics could have helped, explicitly mention this gap.",
     "diagnostics_capability_matched": ["capability 1", "capability 2"] or [],
-    "limitation_notes": "Explain limitations if 'no' or 'maybe'" or null
+    "limitation_notes": "Explain specific limitations that apply" or null
   }},
   "metadata": {{
     "ticket_type": "troubleshooting|feature_request|technical_request|unclear"
@@ -463,31 +522,60 @@ Provide your analysis in the following exact JSON structure:
 }}
 ```
 
+---
+
 ## EXAMPLES
 
-**Example 1: Ticket 89618**
-Subject: Conversation with Ramesh Rengarajan : Blocker Role Tags Setup
-Issue: Blocker appearing for all users instead of targeted roles
-Root Cause: Incorrect logic (OR instead of AND) in role tags visibility rules
-Resolution: Updated role tags combination to AND, blocker appeared to targeted audience
-Custom Field: "No"
+**Example 1: Technical Request - Selector Needed (triage=yes, fix=no)**
 
-**Analysis:**
+Subject: "Flow step not working, need CSS selector"
+Summary: Step 7 of flow failing, support added CSS selector to fix
+Root Cause: Missing selector for step
+Support Root Cause: "Element detection failure - added unique CSS selector"
+
 ```json
 {{
   "was_diagnostics_used": {{
     "llm_assessment": "no",
     "confidence": "confident",
-    "reasoning": "Custom field says 'No' and synthesis shows manual troubleshooting without mention of Diagnostics tool usage."
+    "reasoning": "Synthesis shows manual troubleshooting by support team without mention of Diagnostics."
   }},
   "could_diagnostics_help": {{
-    "assessment": "yes",
+    "triage_assessment": "yes",
+    "triage_reasoning": "Diagnostics would show step 7 failing due to element detection failure, helping author understand WHAT is failing before contacting support.",
+    "fix_assessment": "no",
+    "fix_reasoning": "The fix required support to construct and add a CSS selector. Diagnostics cannot generate or recommend CSS selectors - it can only show that element detection failed.",
     "confidence": "confident",
-    "reasoning": "The issue was a visibility rule logic error (OR vs AND). Diagnostics provides real-time visibility rule evaluation status, which would have shown that the rule was evaluating incorrectly and highlighted the logic discrepancy. The author could have identified and fixed this themselves without raising a ticket. The custom field shows Diagnostics was NOT used, representing a missed opportunity for self-service resolution.",
-    "diagnostics_capability_matched": [
-      "Visibility rule evaluation status",
-      "Rule condition feedback"
-    ],
+    "diagnostics_capability_matched": ["Element detection failures", "Step execution status"],
+    "limitation_notes": "Diagnostics cannot construct CSS selectors; this requires technical expertise from support team."
+  }},
+  "metadata": {{
+    "ticket_type": "troubleshooting"
+  }}
+}}
+```
+
+**Example 2: Reselection Fix (triage=yes, fix=yes)**
+
+Subject: "Smart Tip not appearing after page update"
+Summary: Element detection failure, resolved by reselecting element
+Root Cause: Page DOM changed, original selection invalid
+Support Root Cause: "DOM change broke element selection"
+
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "No mention of Diagnostics in synthesis. Issue resolved through reselection."
+  }},
+  "could_diagnostics_help": {{
+    "triage_assessment": "yes",
+    "triage_reasoning": "Diagnostics would show element not found, indicating the original selection is no longer valid.",
+    "fix_assessment": "yes",
+    "fix_reasoning": "Diagnostics recommends 'try reselecting element' for element detection failures. Author could self-service this fix without support.",
+    "confidence": "confident",
+    "diagnostics_capability_matched": ["Element detection failures", "Property mismatch detection"],
     "limitation_notes": null
   }},
   "metadata": {{
@@ -496,27 +584,28 @@ Custom Field: "No"
 }}
 ```
 
-**Example 2: Ticket 88591**
-Subject: Flow Name: DO NOT DEAL - Integrity (Auto Case Creation for DQ team)
-Issue: Author needed specific CSS selectors for Flow steps
-Root Cause: Technical request for selector construction
-Resolution: Whatfix support team constructed and added selectors
-Custom Field: "No"
+**Example 3: Use Case Implementation (triage=no, fix=no)**
 
-**Analysis:**
+Subject: "Need help creating window variable for user segmentation"
+Summary: Support helped configure SOQL query and AC code for variable
+Root Cause: Technical implementation request
+Support Root Cause: "Customer needed new window variable setup"
+
 ```json
 {{
   "was_diagnostics_used": {{
     "llm_assessment": "no",
     "confidence": "confident",
-    "reasoning": "Synthesis shows this was a technical request for support to generate selectors, not a troubleshooting scenario where Diagnostics would be used."
+    "reasoning": "This was a use case implementation request, not a troubleshooting scenario."
   }},
   "could_diagnostics_help": {{
-    "assessment": "no",
+    "triage_assessment": "no",
+    "triage_reasoning": "This is a use case implementation request, not a troubleshooting scenario. No failure to diagnose - the author needed help building something new.",
+    "fix_assessment": "no",
+    "fix_reasoning": "Diagnostics cannot help with technical implementation tasks like creating window variables or configuring AC code.",
     "confidence": "confident",
-    "reasoning": "This was a CSS selector construction request, which is a technical task best handled by Whatfix support. Diagnostics does not generate or construct CSS selectors - it only diagnoses issues with existing content. The ticket type is a 'technical request', not a troubleshooting issue, making Diagnostics irrelevant here.",
     "diagnostics_capability_matched": [],
-    "limitation_notes": "Diagnostics cannot generate or construct CSS selectors; this requires technical expertise from support team."
+    "limitation_notes": "Use case implementation requests are outside Diagnostics scope."
   }},
   "metadata": {{
     "ticket_type": "technical_request"
@@ -524,4 +613,64 @@ Custom Field: "No"
 }}
 ```
 
-Focus on accuracy and avoid hallucination. Only use information from the synthesis."""
+**Example 4: Latching Issue (triage=maybe, fix=no)**
+
+Subject: "User Action tracking wrong element"
+Summary: UA latching onto similar element in DOM, support added unique selector
+Root Cause: Non-unique DOM structure causing incorrect element match
+Support Root Cause: "Element latching to wrong target - added unique CSS selector"
+
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "No mention of Diagnostics. Issue identified through manual investigation."
+  }},
+  "could_diagnostics_help": {{
+    "triage_assessment": "maybe",
+    "triage_reasoning": "Diagnostics would show 'element found' but CANNOT detect if it's the WRONG element. It provides partial visibility - author would see element found successfully, which is misleading for latching issues.",
+    "fix_assessment": "no",
+    "fix_reasoning": "The fix required adding a unique CSS selector. Diagnostics cannot detect latching issues or recommend unique selectors to fix them.",
+    "confidence": "confident",
+    "diagnostics_capability_matched": [],
+    "limitation_notes": "Diagnostics cannot detect latching issues (wrong element found) - it only shows element found/not found status."
+  }},
+  "metadata": {{
+    "ticket_type": "troubleshooting"
+  }}
+}}
+```
+
+**Example 5: Occurrence Exhausted (triage=yes, fix=yes)**
+
+Subject: "Pop-up not showing after page refresh"
+Summary: Pop-up occurrence setting was set to 1, preventing re-display
+Root Cause: Occurrence count exhausted
+Support Root Cause: "Occurrence limit reached"
+
+```json
+{{
+  "was_diagnostics_used": {{
+    "llm_assessment": "no",
+    "confidence": "confident",
+    "reasoning": "No mention of Diagnostics. Support identified occurrence setting issue."
+  }},
+  "could_diagnostics_help": {{
+    "triage_assessment": "yes",
+    "triage_reasoning": "Diagnostics shows occurrence exhausted status, which would have directly identified that the pop-up already reached its display limit.",
+    "fix_assessment": "yes",
+    "fix_reasoning": "Diagnostics recommends increasing occurrence count for this issue. Author could self-service by adjusting the occurrence setting.",
+    "confidence": "confident",
+    "diagnostics_capability_matched": ["Occurrence exhausted detection", "Content status visibility"],
+    "limitation_notes": null
+  }},
+  "metadata": {{
+    "ticket_type": "troubleshooting"
+  }}
+}}
+```
+
+---
+
+Focus on accuracy. Only use information from the synthesis. When in doubt, use "maybe" with "not confident"."""

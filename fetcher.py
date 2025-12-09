@@ -264,10 +264,24 @@ class ZendeskFetcher:
                 jira_ticket_url = field_value
                 self.logger.debug(f"Parsed JIRA Ticket field: url='{field_value}'")
 
+            # Root Cause field (Phase 6 Enhancement)
+            elif field_id == config.ROOT_CAUSE_FIELD_ID:
+                root_cause_value = field_value if field_value else "Not provided"
+                custom_fields_data['support_root_cause'] = root_cause_value
+                self.logger.debug(
+                    f"Parsed Root Cause field: '{root_cause_value[:50]}...'"
+                    if len(str(root_cause_value)) > 50 else f"Parsed Root Cause field: '{root_cause_value}'"
+                )
+
         # Default diagnostics field if not found
         if 'was_diagnostics_used' not in custom_fields_data:
             custom_fields_data['was_diagnostics_used'] = 'unknown'
             self.logger.debug("Diagnostics custom field not found, defaulting to 'unknown'")
+
+        # Default support_root_cause field if not found (Phase 6)
+        if 'support_root_cause' not in custom_fields_data:
+            custom_fields_data['support_root_cause'] = 'Not provided'
+            self.logger.debug("Root Cause custom field not found, defaulting to 'Not provided'")
 
         # Determine escalation status (Phase 5)
         escalation_data = utils.determine_escalation_status(cross_team_value, jira_ticket_url)
