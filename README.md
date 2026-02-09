@@ -35,15 +35,6 @@ A terminal-based application that fetches Zendesk support tickets, uses AI (Goog
 - **Simple CLI Flag**: `--model-provider azure` or `--model-provider gemini`
 - Same analysis quality across both providers (identical prompts, consistent outputs)
 
-### Phase 4: Arize AX Observability (NEW)
-- **LLM Tracing**: Automatic capture of all Gemini and Azure OpenAI API calls with token usage, latency, and costs
-- **Cloud-Based**: No self-hosted infrastructure required - traces sent to Arize AX cloud
-- **Performance Monitoring**: Track request latency, error rates, and throughput in real-time
-- **Search & Analysis**: Filter traces by ticket ID, model, timeframe, or custom attributes
-- **Optional**: Application runs normally without tracing if credentials not configured
-- **Three-Tier Instrumentation**: LLM auto-instrumentation, HTTP client tracing, business logic spans (future)
-- See [docs/arize_ax_setup.md](docs/arize_ax_setup.md) for setup instructions
-
 ### General Features
 - **Flexible Analysis Modes**: Choose POD categorization, Diagnostics analysis, or both in parallel
 - **Flexible LLM Provider**: Choose between Gemini (free) or Azure OpenAI (enterprise)
@@ -61,7 +52,6 @@ A terminal-based application that fetches Zendesk support tickets, uses AI (Goog
 - **At least one** of the following LLM providers:
   - **Google Gemini API key** (free tier, default)
   - **Azure OpenAI access** (enterprise, faster for bulk processing)
-- **Optional**: Arize AX account for LLM observability and tracing (free tier available at [arize.com](https://arize.com))
 
 ## Installation
 
@@ -419,13 +409,6 @@ Key configuration options can be modified in `config.py`:
   - `AZURE_OPENAI_DEPLOYMENT_NAME`: Your GPT-4o deployment name
   - `AZURE_OPENAI_API_VERSION`: API version (default: "2024-02-01")
 
-- **Arize AX Observability** (Phase 4 - optional, configured via `.env`):
-  - `ARIZE_SPACE_ID`: Your Arize Space ID (from Space Settings)
-  - `ARIZE_API_KEY`: Your Arize API Key (from Space Settings → API Keys)
-  - `ARIZE_PROJECT_NAME`: Project name for grouping traces (default: "ticket-analysis")
-  - `ENABLE_TRACING`: Set to "false" to disable tracing (default: "true")
-  - See [docs/arize_ax_setup.md](docs/arize_ax_setup.md) for detailed setup instructions
-
 ## Troubleshooting
 
 ### Common Issues
@@ -481,7 +464,7 @@ The application consists of modular components:
 - **categorizer.py**: POD categorization module
 - **llm_provider.py**: LLM provider abstraction layer (factory pattern for Gemini/Azure)
 
-For detailed architecture documentation, see [plan.md](plan.md).
+For detailed architecture documentation, see [docs/implementation_plan.md](docs/implementation_plan.md).
 
 ## Performance
 

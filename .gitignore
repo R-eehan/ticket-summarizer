@@ -42,12 +42,20 @@ logs/
 
 # Output Files
 output_*.json
+output_*.csv
 
-# Input Files (optional - user provides their own)
+# Input/Data Files (user provides their own)
 input_tickets.csv
+input_tickets_sample.csv
+*.png
+*.jpg
 
 # Test Files
 test_*.csv
+
+# Internal/Working Documents
+Whatfix_*.md
+diagnostics_summary.md
 
 # OS
 .DS_Store

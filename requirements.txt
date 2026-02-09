@@ -8,9 +8,3 @@ rich==13.7.0
 requests==2.31.0
 beautifulsoup4==4.12.3
 html2text==2020.1.16
-
-# Phase 4: Arize AX Observability & Tracing
-arize-otel
-openinference-instrumentation-openai
-openinference-instrumentation-google-genai
-opentelemetry-instrumentation-aiohttp-client

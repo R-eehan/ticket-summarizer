@@ -2,7 +2,6 @@
 POD Categorization module for Zendesk Ticket Summarizer (Phase 2).
 Categorizes synthesized tickets into PODs using Gemini LLM with confidence scoring.
 
-Phase 4: Added OpenTelemetry tracing (Tier 2 - Business Logic Spans)
 """
 
 import asyncio
@@ -10,7 +9,6 @@ import logging
 import re
 from typing import Dict, List, Optional, Callable
 from google import genai
-from opentelemetry import trace
 
 import config
 import utils
@@ -51,9 +49,6 @@ class TicketCategorizer:
         # Rate limiting: Max 5 concurrent Gemini API calls
         # Prevents hitting API rate limits while maintaining good throughput
         self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
-
-        # Initialize OpenTelemetry tracer (Phase 4 - Tier 2)
-        self.tracer = trace.get_tracer(__name__)
 
         self.logger.info(f"Initialized Categorizer with model: {self.model_name}")
 
@@ -248,9 +243,6 @@ class TicketCategorizer:
         """
         Categorize a single synthesized ticket into a primary POD.
 
-        Phase 4: Added OpenTelemetry parent span (Tier 2 - Business Logic)
-        This creates a parent span that groups all LLM calls for categorization.
-
         This is the core categorization method. It:
         1. Extracts synthesis from ticket data
         2. Formats categorization prompt with POD definitions
@@ -280,88 +272,68 @@ class TicketCategorizer:
         """
         ticket_id = ticket_data.get('ticket_id', 'unknown')
 
-        # Phase 4: Create parent span for entire categorization operation
-        with self.tracer.start_as_current_span(
-            "ticket.categorization",
-            attributes={
-                "ticket.id": str(ticket_id),
-                "operation.type": "categorization",
-            }
-        ) as span:
-            # Rate limiting: Ensure we don't exceed Gemini API limits
-            # Only 5 categorizations can run concurrently
-            async with self.semaphore:
-                self.logger.debug(f"Categorizing ticket {ticket_id}")
+        # Rate limiting: Ensure we don't exceed Gemini API limits
+        # Only 5 categorizations can run concurrently
+        async with self.semaphore:
+            self.logger.debug(f"Categorizing ticket {ticket_id}")
 
-                try:
-                    # Step 1: Extract synthesis data for categorization
-                    synthesis = ticket_data.get('synthesis', {})
+            try:
+                # Step 1: Extract synthesis data for categorization
+                synthesis = ticket_data.get('synthesis', {})
 
-                    # Skip categorization if synthesis is missing or incomplete
-                    if not synthesis or not synthesis.get('summary'):
-                        raise utils.GeminiAPIError(
-                            f"Ticket {ticket_id} missing synthesis data - cannot categorize"
-                        )
-
-                    # Step 2: Format categorization prompt with synthesis context
-                    # Prompt includes all POD definitions and categorization logic
-                    prompt = self.format_categorization_prompt(ticket_data)
-
-                    # Step 3: Call Gemini LLM for categorization (new google-genai SDK)
-                    # Run synchronous API call in executor to avoid blocking
-                    loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self.client.models.generate_content(
-                            model=self.model_name,
-                            contents=prompt
-                        )
+                # Skip categorization if synthesis is missing or incomplete
+                if not synthesis or not synthesis.get('summary'):
+                    raise utils.GeminiAPIError(
+                        f"Ticket {ticket_id} missing synthesis data - cannot categorize"
                     )
 
-                    # Validate response
-                    if not response or not response.text:
-                        raise utils.GeminiAPIError(
-                            f"Empty response from Gemini for ticket {ticket_id}"
-                        )
+                # Step 2: Format categorization prompt with synthesis context
+                # Prompt includes all POD definitions and categorization logic
+                prompt = self.format_categorization_prompt(ticket_data)
 
-                    response_text = response.text
-                    self.logger.debug(f"Received categorization response for ticket {ticket_id}")
+                # Step 3: Call Gemini LLM for categorization (new google-genai SDK)
+                # Run synchronous API call in executor to avoid blocking
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt
+                    )
+                )
 
-                    # Step 4: Parse LLM response into structured categorization data
-                    categorization = self.parse_categorization_response(response_text)
-
-                    # Add span attributes for observability
-                    span.set_attribute("categorization.success", True)
-                    span.set_attribute("pod.primary", categorization['primary_pod'])
-                    span.set_attribute("confidence.level", categorization['confidence'])
-                    span.set_attribute("response.length", len(response_text))
-
-                    # Step 5: Add categorization to ticket data
-                    result = ticket_data.copy()
-                    result["categorization"] = categorization
-
-                    self.logger.info(
-                        f"Successfully categorized ticket {ticket_id} as "
-                        f"{categorization['primary_pod']} "
-                        f"(confidence: {categorization['confidence']})"
+                # Validate response
+                if not response or not response.text:
+                    raise utils.GeminiAPIError(
+                        f"Empty response from Gemini for ticket {ticket_id}"
                     )
 
-                    # Add delay to respect free tier rate limits
-                    if config.GEMINI_REQUEST_DELAY > 0:
-                        await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                response_text = response.text
+                self.logger.debug(f"Received categorization response for ticket {ticket_id}")
 
-                    return result
+                # Step 4: Parse LLM response into structured categorization data
+                categorization = self.parse_categorization_response(response_text)
 
-                except Exception as e:
-                    error_msg = f"Failed to categorize ticket {ticket_id}: {e}"
-                    self.logger.error(error_msg)
+                # Step 5: Add categorization to ticket data
+                result = ticket_data.copy()
+                result["categorization"] = categorization
 
-                    # Mark span as error
-                    span.set_attribute("categorization.success", False)
-                    span.set_attribute("error.message", str(e))
-                    span.record_exception(e)
+                self.logger.info(
+                    f"Successfully categorized ticket {ticket_id} as "
+                    f"{categorization['primary_pod']} "
+                    f"(confidence: {categorization['confidence']})"
+                )
 
-                    raise utils.GeminiAPIError(error_msg)
+                # Add delay to respect free tier rate limits
+                if config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+
+                return result
+
+            except Exception as e:
+                error_msg = f"Failed to categorize ticket {ticket_id}: {e}"
+                self.logger.error(error_msg)
+                raise utils.GeminiAPIError(error_msg)
 
     async def categorize_multiple(
         self,

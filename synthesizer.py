@@ -3,7 +3,6 @@ LLM client for synthesizing ticket summaries.
 Supports multiple LLM providers (Gemini, Azure OpenAI) via factory pattern.
 
 Phase 3c: Multi-Model Support
-Phase 4: Added OpenTelemetry tracing (Tier 2 - Business Logic Spans)
 Implements rate limiting, retry logic, and response parsing.
 """
 
@@ -11,7 +10,6 @@ import asyncio
 import logging
 import re
 from typing import Dict, List, Optional, Callable
-from opentelemetry import trace
 
 import config
 import utils
@@ -46,9 +44,6 @@ class GeminiSynthesizer:
 
         # Rate limiting
         self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
-
-        # Initialize OpenTelemetry tracer (Phase 4 - Tier 2)
-        self.tracer = trace.get_tracer(__name__)
 
         self.logger.info(f"Synthesizer initialized with {model_provider} provider")
 
@@ -154,10 +149,6 @@ class GeminiSynthesizer:
         """
         Synthesize a single ticket using Gemini LLM.
 
-        Phase 4: Added OpenTelemetry parent span (Tier 2 - Business Logic)
-        This creates a parent span that groups all LLM calls and HTTP operations
-        for this ticket into a single trace.
-
         Args:
             ticket_data: Dictionary containing complete ticket information
 
@@ -169,65 +160,46 @@ class GeminiSynthesizer:
         """
         ticket_id = ticket_data.get('ticket_id', 'unknown')
 
-        # Phase 4: Create parent span for entire synthesis operation
-        with self.tracer.start_as_current_span(
-            "ticket.synthesis",
-            attributes={
-                "ticket.id": str(ticket_id),
-                "operation.type": "synthesis",
-                "model.provider": self.model_provider,
-            }
-        ) as span:
-            async with self.semaphore:
-                self.logger.debug(f"Synthesizing ticket {ticket_id}")
+        async with self.semaphore:
+            self.logger.debug(f"Synthesizing ticket {ticket_id}")
 
-                try:
-                    # Format the prompt
-                    prompt = self.format_prompt(ticket_data)
+            try:
+                # Format the prompt
+                prompt = self.format_prompt(ticket_data)
 
-                    # Call LLM API (via provider abstraction, synchronous but wrapped in async)
-                    loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self.llm_client.generate_content(prompt)
-                    )
+                # Call LLM API (via provider abstraction, synchronous but wrapped in async)
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.llm_client.generate_content(prompt)
+                )
 
-                    # Extract response text
-                    if not response or not response.text:
-                        raise utils.GeminiAPIError(f"Empty response from LLM for ticket {ticket_id}")
+                # Extract response text
+                if not response or not response.text:
+                    raise utils.GeminiAPIError(f"Empty response from LLM for ticket {ticket_id}")
 
-                    response_text = response.text
-                    self.logger.debug(f"Received response for ticket {ticket_id}")
+                response_text = response.text
+                self.logger.debug(f"Received response for ticket {ticket_id}")
 
-                    # Parse the response
-                    synthesis = self.parse_response(response_text)
+                # Parse the response
+                synthesis = self.parse_response(response_text)
 
-                    # Add span attributes for observability
-                    span.set_attribute("synthesis.success", True)
-                    span.set_attribute("response.length", len(response_text))
+                # Add to ticket data
+                result = ticket_data.copy()
+                result["synthesis"] = synthesis
 
-                    # Add to ticket data
-                    result = ticket_data.copy()
-                    result["synthesis"] = synthesis
+                self.logger.info(f"Successfully synthesized ticket {ticket_id}")
 
-                    self.logger.info(f"Successfully synthesized ticket {ticket_id}")
+                # Add delay to respect free tier rate limits
+                if config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
 
-                    # Add delay to respect free tier rate limits
-                    if config.GEMINI_REQUEST_DELAY > 0:
-                        await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                return result
 
-                    return result
-
-                except Exception as e:
-                    error_msg = f"Failed to synthesize ticket {ticket_id}: {e}"
-                    self.logger.error(error_msg)
-
-                    # Mark span as error
-                    span.set_attribute("synthesis.success", False)
-                    span.set_attribute("error.message", str(e))
-                    span.record_exception(e)
-
-                    raise utils.GeminiAPIError(error_msg)
+            except Exception as e:
+                error_msg = f"Failed to synthesize ticket {ticket_id}: {e}"
+                self.logger.error(error_msg)
+                raise utils.GeminiAPIError(error_msg)
 
     async def synthesize_multiple(
         self,
