@@ -184,6 +184,41 @@ VALID_PODS = [
 # Confidence levels for categorization
 CONFIDENCE_LEVELS = ["confident", "not confident"]
 
+# ============================================================================
+# DIAGNOSTICS GAP ANALYSIS CONFIGURATION (Phase 7)
+# ============================================================================
+
+# Triage Gap Areas - Why Diagnostics cannot DETECT/IDENTIFY an issue
+TRIAGE_GAP_AREAS = [
+    "integration",              # External system integrations (Excel, SharePoint, Salesforce)
+    "authentication",           # SSO, auth tokens, permissions
+    "network_infrastructure",   # VPN, connectivity, backend issues
+    "latching",                 # Wrong element detected (found but incorrect)
+    "element_hidden",           # Element obscured/hidden by UI
+    "theming_styling",          # Colors, fonts, appearance issues
+    "browser_extension",        # Browser/extension compatibility
+    "session_cookies",          # Session/cookie handling
+    "timing_performance",       # Page load, timing issues
+    "use_case_implementation",  # Not troubleshooting - "how do I build X?"
+    "feature_request",          # Not troubleshooting - requesting new functionality
+    "other_triage_gap",         # Troubleshooting issue but gap doesn't fit above
+]
+
+# Fix Gap Areas - Why Diagnostics cannot RECOMMEND a self-service fix
+FIX_GAP_AREAS = [
+    "css_selector",             # Selector construction/modification
+    "rule_logic",               # AND/OR, condition logic changes
+    "tag_assignment",           # Page/role tag additions
+    "flow_modification",        # Add steps, navigation changes
+    "element_precision",        # Element precision adjustments
+    "engineering_required",     # Backend bug, needs code fix
+    "integration_fix",          # External system fix needed
+    "authentication_fix",       # Auth/permission fix needed
+    "extension_fix",            # Extension reinstall/update
+    "reselection_complex",      # Reselection needed but complex guidance required
+    "other_fix_gap",            # Fix gap doesn't fit above
+]
+
 # POD Categorization Prompt Template
 CATEGORIZATION_PROMPT_TEMPLATE = """You are a Whatfix support ticket categorization expert. Your task is to categorize a support ticket into ONE primary POD based on the ticket's synthesis summary and resolution.
 
@@ -510,8 +545,12 @@ Provide your analysis in this EXACT JSON structure:
   "could_diagnostics_help": {{
     "triage_assessment": "yes|no|maybe",
     "triage_reasoning": "Why Diagnostics could/couldn't help IDENTIFY the issue. Reference specific detection capabilities.",
+    "triage_gap_area": "One of the values below OR null if triage_assessment is yes",
+    "triage_gap_description": "Only required if triage_gap_area is other_triage_gap, otherwise null",
     "fix_assessment": "yes|no|maybe",
     "fix_reasoning": "Why Diagnostics could/couldn't RECOMMEND a self-service fix. Be explicit about what the fix was.",
+    "fix_gap_area": "One of the values below OR null if fix_assessment is yes",
+    "fix_gap_description": "Only required if fix_gap_area is other_fix_gap, otherwise null",
     "confidence": "confident|not confident",
     "diagnostics_capability_matched": ["capability 1", "capability 2"] or [],
     "limitation_notes": "Explain specific limitations that apply" or null
@@ -521,6 +560,51 @@ Provide your analysis in this EXACT JSON structure:
   }}
 }}
 ```
+
+---
+
+## GAP ANALYSIS (Phase 7)
+
+**CRITICAL: When triage_assessment = "no" or "maybe", you MUST provide triage_gap_area.**
+**CRITICAL: When fix_assessment = "no" or "maybe", you MUST provide fix_gap_area.**
+
+### TRIAGE_GAP_AREA Values (Why Diagnostics Cannot DETECT)
+
+| Value | When to Use |
+|-------|-------------|
+| `integration` | Issue involves external systems (Excel, SharePoint, Salesforce, Workday, etc.) |
+| `authentication` | Issue involves SSO, auth tokens, login, permissions |
+| `network_infrastructure` | Issue involves VPN, connectivity, backend server issues |
+| `latching` | Element found but WRONG element (Diagnostics shows "found" incorrectly) |
+| `element_hidden` | Element exists but hidden by CSS/overlay/z-index |
+| `theming_styling` | Issue involves colors, fonts, Self-Help appearance, branding |
+| `browser_extension` | Issue involves browser compatibility or extension conflicts |
+| `session_cookies` | Issue involves session handling, cookies, cross-domain |
+| `timing_performance` | Issue involves page load timing, slow performance, race conditions |
+| `use_case_implementation` | NOT a troubleshooting issue - customer asking "how do I build X?" |
+| `feature_request` | NOT a troubleshooting issue - customer requesting new functionality |
+| `other_triage_gap` | Troubleshooting issue but none of the above fit (REQUIRES triage_gap_description) |
+
+### FIX_GAP_AREA Values (Why Diagnostics Cannot RECOMMEND a Fix)
+
+| Value | When to Use |
+|-------|-------------|
+| `css_selector` | Fix requires constructing or modifying CSS selectors |
+| `rule_logic` | Fix requires changing AND/OR conditions, rule operators, or condition logic |
+| `tag_assignment` | Fix requires adding or modifying page tags or role tags |
+| `flow_modification` | Fix requires adding steps, navigation changes, or flow restructuring |
+| `element_precision` | Fix requires element precision adjustments for similar elements |
+| `engineering_required` | Fix requires backend code changes (product bug, escalated to engineering) |
+| `integration_fix` | Fix requires external system changes or integration configuration |
+| `authentication_fix` | Fix requires auth/permission/SSO configuration |
+| `extension_fix` | Fix requires extension reinstall, update, or reconfiguration |
+| `reselection_complex` | Reselection needed but requires complex guidance beyond simple "try reselecting" |
+| `other_fix_gap` | None of the above fit (REQUIRES fix_gap_description) |
+
+### Gap Area Rules:
+1. **Pick the PRIMARY gap only** - the most significant blocker
+2. **Set to null when assessment is "yes"** - no gap exists
+3. **Provide description for "other" gaps** - explain the novel gap in 1-2 sentences
 
 ---
 
@@ -543,8 +627,12 @@ Support Root Cause: "Element detection failure - added unique CSS selector"
   "could_diagnostics_help": {{
     "triage_assessment": "yes",
     "triage_reasoning": "Diagnostics would show step 7 failing due to element detection failure, helping author understand WHAT is failing before contacting support.",
+    "triage_gap_area": null,
+    "triage_gap_description": null,
     "fix_assessment": "no",
     "fix_reasoning": "The fix required support to construct and add a CSS selector. Diagnostics cannot generate or recommend CSS selectors - it can only show that element detection failed.",
+    "fix_gap_area": "css_selector",
+    "fix_gap_description": null,
     "confidence": "confident",
     "diagnostics_capability_matched": ["Element detection failures", "Step execution status"],
     "limitation_notes": "Diagnostics cannot construct CSS selectors; this requires technical expertise from support team."
@@ -572,8 +660,12 @@ Support Root Cause: "DOM change broke element selection"
   "could_diagnostics_help": {{
     "triage_assessment": "yes",
     "triage_reasoning": "Diagnostics would show element not found, indicating the original selection is no longer valid.",
+    "triage_gap_area": null,
+    "triage_gap_description": null,
     "fix_assessment": "yes",
     "fix_reasoning": "Diagnostics recommends 'try reselecting element' for element detection failures. Author could self-service this fix without support.",
+    "fix_gap_area": null,
+    "fix_gap_description": null,
     "confidence": "confident",
     "diagnostics_capability_matched": ["Element detection failures", "Property mismatch detection"],
     "limitation_notes": null
@@ -601,8 +693,12 @@ Support Root Cause: "Customer needed new window variable setup"
   "could_diagnostics_help": {{
     "triage_assessment": "no",
     "triage_reasoning": "This is a use case implementation request, not a troubleshooting scenario. No failure to diagnose - the author needed help building something new.",
+    "triage_gap_area": "use_case_implementation",
+    "triage_gap_description": null,
     "fix_assessment": "no",
     "fix_reasoning": "Diagnostics cannot help with technical implementation tasks like creating window variables or configuring AC code.",
+    "fix_gap_area": "integration_fix",
+    "fix_gap_description": null,
     "confidence": "confident",
     "diagnostics_capability_matched": [],
     "limitation_notes": "Use case implementation requests are outside Diagnostics scope."
@@ -630,8 +726,12 @@ Support Root Cause: "Element latching to wrong target - added unique CSS selecto
   "could_diagnostics_help": {{
     "triage_assessment": "maybe",
     "triage_reasoning": "Diagnostics would show 'element found' but CANNOT detect if it's the WRONG element. It provides partial visibility - author would see element found successfully, which is misleading for latching issues.",
+    "triage_gap_area": "latching",
+    "triage_gap_description": null,
     "fix_assessment": "no",
     "fix_reasoning": "The fix required adding a unique CSS selector. Diagnostics cannot detect latching issues or recommend unique selectors to fix them.",
+    "fix_gap_area": "css_selector",
+    "fix_gap_description": null,
     "confidence": "confident",
     "diagnostics_capability_matched": [],
     "limitation_notes": "Diagnostics cannot detect latching issues (wrong element found) - it only shows element found/not found status."
@@ -659,8 +759,12 @@ Support Root Cause: "Occurrence limit reached"
   "could_diagnostics_help": {{
     "triage_assessment": "yes",
     "triage_reasoning": "Diagnostics shows occurrence exhausted status, which would have directly identified that the pop-up already reached its display limit.",
+    "triage_gap_area": null,
+    "triage_gap_description": null,
     "fix_assessment": "yes",
     "fix_reasoning": "Diagnostics recommends increasing occurrence count for this issue. Author could self-service by adjusting the occurrence setting.",
+    "fix_gap_area": null,
+    "fix_gap_description": null,
     "confidence": "confident",
     "diagnostics_capability_matched": ["Occurrence exhausted detection", "Content status visibility"],
     "limitation_notes": null

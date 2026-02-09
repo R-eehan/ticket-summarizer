@@ -42,6 +42,14 @@
   - [Module Updates - Phase 5](#module-updates---phase-5)
   - [CSV Export Specification](#csv-export-specification)
   - [Key Design Decisions - Phase 5](#key-design-decisions---phase-5)
+- [Phase 7: Diagnostics Gap Analysis](#phase-7-diagnostics-gap-analysis)
+  - [Overview](#overview-5)
+  - [Problem Statement - Phase 7](#problem-statement---phase-7)
+  - [Solution](#solution-3)
+  - [Gap Area Taxonomy](#gap-area-taxonomy)
+  - [Module Updates - Phase 7](#module-updates---phase-7)
+  - [Updated CSV Columns](#updated-csv-columns)
+  - [Key Design Decisions - Phase 7](#key-design-decisions---phase-7)
 
 ---
 
@@ -1542,9 +1550,218 @@ See [ADR-013 in architecture_decisions.md](./architecture_decisions.md#adr-013-s
 
 ---
 
+## Phase 7: Diagnostics Gap Analysis
+
+### Overview
+
+Phase 7 enhances the diagnostics analysis to identify **specific capability gaps** when Diagnostics cannot help with a ticket. This builds on Phase 6's triage/fix split to provide structured data for PM prioritization.
+
+**Key Insight**: Understanding WHY Diagnostics cannot help is as important as knowing THAT it cannot help. This enables targeted roadmap prioritization:
+- Expand Diagnostics' detection surface (triage gaps)
+- Add fix recommendation capabilities (fix gaps)
+
+### Problem Statement - Phase 7
+
+**Current Challenges:**
+- `limitation_notes` provides free-form text that cannot be aggregated programmatically
+- PM cannot easily create pivot tables to understand gap patterns
+- No distinction between "can't detect" (triage) vs "can't recommend fix" (fix)
+- Cannot track patterns of gaps over time
+
+**Business Impact:**
+- Cannot prioritize feature investments based on data
+- Manual review required to categorize limitation notes
+- No structured data for engineering roadmap planning
+
+### Solution
+
+1. **Structured Gap Taxonomy**: Define 12 triage gap categories and 11 fix gap categories
+2. **Conditional Population**: Gap fields only populated when assessment is "no" or "maybe"
+3. **"Other" Categories**: Capture novel gaps with mandatory descriptions
+4. **Single Primary Gap**: Each assessment gets one gap area (for clean pivoting)
+
+### Gap Area Taxonomy
+
+#### TRIAGE_GAP_AREAS (Why Diagnostics Cannot DETECT)
+
+| Value | Description | When to Use |
+|-------|-------------|-------------|
+| `integration` | External system integrations | Excel, SharePoint, Salesforce, etc. |
+| `authentication` | SSO, auth tokens, permissions | Login, token refresh, role issues |
+| `network_infrastructure` | VPN, connectivity, backend issues | Network latency, server errors |
+| `latching` | Wrong element detected | Diagnostics shows "found" but incorrect element |
+| `element_hidden` | Element obscured/hidden by UI | CSS overlay, z-index, display:none |
+| `theming_styling` | Colors, fonts, appearance | Self-Help colors, icon styling |
+| `browser_extension` | Browser/extension compatibility | Extension conflicts, browser bugs |
+| `session_cookies` | Session handling, cross-domain | Cookie issues, session expiry |
+| `timing_performance` | Page load, timing issues | Slow load, race conditions |
+| `use_case_implementation` | Not troubleshooting | "How do I build X?" questions |
+| `feature_request` | Not troubleshooting | Customer requesting new functionality |
+| `other_triage_gap` | Novel gap | Requires `triage_gap_description` |
+
+#### FIX_GAP_AREAS (Why Diagnostics Cannot RECOMMEND)
+
+| Value | Description | When to Use |
+|-------|-------------|-------------|
+| `css_selector` | Selector construction | Complex CSS selectors needed |
+| `rule_logic` | AND/OR condition changes | Rule logic modifications |
+| `tag_assignment` | Page/role tag additions | Tag setup required |
+| `flow_modification` | Add steps, navigation | Flow restructuring needed |
+| `element_precision` | Element precision adjustments | Precision slider changes |
+| `engineering_required` | Backend bug, needs code fix | Product bug requiring engineering |
+| `integration_fix` | External system fix needed | Third-party system changes |
+| `authentication_fix` | Auth/permission configuration | SSO/auth config changes |
+| `extension_fix` | Extension reinstall/update | Extension-related fixes |
+| `reselection_complex` | Complex reselection guidance | Reselection with custom guidance |
+| `other_fix_gap` | Novel gap | Requires `fix_gap_description` |
+
+### Module Updates - Phase 7
+
+#### 1. config.py - Gap Area Constants
+
+```python
+# ============================================================================
+# DIAGNOSTICS GAP ANALYSIS CONFIGURATION (Phase 7)
+# ============================================================================
+
+TRIAGE_GAP_AREAS = [
+    "integration",
+    "authentication",
+    "network_infrastructure",
+    "latching",
+    "element_hidden",
+    "theming_styling",
+    "browser_extension",
+    "session_cookies",
+    "timing_performance",
+    "use_case_implementation",
+    "feature_request",
+    "other_triage_gap",
+]
+
+FIX_GAP_AREAS = [
+    "css_selector",
+    "rule_logic",
+    "tag_assignment",
+    "flow_modification",
+    "element_precision",
+    "engineering_required",
+    "integration_fix",
+    "authentication_fix",
+    "extension_fix",
+    "reselection_complex",
+    "other_fix_gap",
+]
+```
+
+**Updated DIAGNOSTICS_ANALYSIS_PROMPT**: Added GAP ANALYSIS section with tables defining when to use each gap area value, plus updated OUTPUT STRUCTURE to include gap fields.
+
+#### 2. utils.py - Validation Functions
+
+```python
+def validate_triage_gap_area(value: Optional[str]) -> bool:
+    """Validate triage_gap_area against allowed values."""
+    if value is None:
+        return True
+    return value in config.TRIAGE_GAP_AREAS
+
+def validate_fix_gap_area(value: Optional[str]) -> bool:
+    """Validate fix_gap_area against allowed values."""
+    if value is None:
+        return True
+    return value in config.FIX_GAP_AREAS
+```
+
+#### 3. diagnostics_analyzer.py - Gap Validation
+
+**Updated `_validate_analysis_structure()`**:
+- Validates `triage_gap_area` when `triage_assessment` is "no" or "maybe"
+- Validates `fix_gap_area` when `fix_assessment` is "no" or "maybe"
+- Ensures `triage_gap_description` is provided when `triage_gap_area` is "other_triage_gap"
+- Ensures `fix_gap_description` is provided when `fix_gap_area` is "other_fix_gap"
+
+**Updated span attributes** for observability (Phase 4 integration).
+
+#### 4. csv_exporter.py - New Columns
+
+**Four new columns added to diagnostics CSV**:
+- `triage_gap_area` (after `triage_reasoning`)
+- `triage_gap_description` (after `triage_gap_area`)
+- `fix_gap_area` (after `fix_reasoning`)
+- `fix_gap_description` (after `fix_gap_area`)
+
+### Updated CSV Columns
+
+**Diagnostics Analysis CSV** (Phase 7 additions in bold):
+
+| Column | Description |
+|--------|-------------|
+| ... (existing columns) | |
+| `triage_assessment` | yes/no/maybe |
+| `triage_reasoning` | Explanation of triage assessment |
+| **`triage_gap_area`** | Gap category (when triage != "yes") |
+| **`triage_gap_description`** | Description (when triage_gap_area = "other_triage_gap") |
+| `fix_assessment` | yes/no/maybe |
+| `fix_reasoning` | Explanation of fix assessment |
+| **`fix_gap_area`** | Gap category (when fix != "yes") |
+| **`fix_gap_description`** | Description (when fix_gap_area = "other_fix_gap") |
+| `overall_assessment` | Derived from triage + fix |
+| ... (remaining columns) | |
+
+### Key Design Decisions - Phase 7
+
+#### 1. Structured Taxonomy Over Free-Form
+
+**Decision**: Use predefined categories instead of enhancing free-form `limitation_notes`
+
+**Rationale**:
+- Enables pivot table analysis in Google Sheets
+- Programmatic aggregation: "25% of triage gaps are integration-related"
+- Pattern identification for roadmap planning
+
+See [ADR-014 in architecture_decisions.md](./architecture_decisions.md#adr-014-gap-area-taxonomy-for-diagnostics-coverage-analysis)
+
+#### 2. Separate Triage vs Fix Gaps
+
+**Decision**: Maintain separate gap taxonomies for triage and fix
+
+**Rationale**:
+- Different roadmap priorities (expand detection vs add recommendations)
+- Ticket may be identifiable but not fixable (triage=yes, fix=no with gap)
+- Clear investment guidance for PM
+
+#### 3. Single Primary Gap (Not Multi-Value)
+
+**Decision**: Each assessment gets ONE gap area
+
+**Rationale**:
+- Pivot tables work cleanly with single values
+- Forces LLM to identify ROOT cause, not list symptoms
+- Simpler CSV schema
+
+#### 4. "Other" Categories with Mandatory Descriptions
+
+**Decision**: Include `other_triage_gap` and `other_fix_gap` with required descriptions
+
+**Rationale**:
+- Doesn't force-fit unusual cases
+- Enables quarterly taxonomy review
+- Patterns in "other" descriptions → new categories
+
+#### 5. Gap Fields Null When Assessment is "Yes"
+
+**Decision**: Gap area fields are null when Diagnostics CAN help
+
+**Rationale**:
+- Clean data model (no gap when there's no gap)
+- Prevents confusion in CSV analysis
+- Clear signal: populated = problem to address
+
+---
+
 ## Future Enhancements
 
-Based on Phases 1-5 foundation:
+Based on Phases 1-7 foundation:
 
 ### Phase 4: Observability & Instrumentation (Parked)
 
@@ -1582,9 +1799,9 @@ Based on Phase 2, 3b, & 5 output structure (JSON + CSV):
 
 ---
 
-**Last Updated:** 2025-11-17 (Phase 5 in progress)
+**Last Updated:** 2025-12-09 (Phase 7 implemented)
 
 **Next Steps:**
-- Complete Phase 5 implementation (Engineering Escalation & CSV Export)
+- Test Phase 7 implementation (Gap Analysis)
 - Resume Phase 4 observability instrumentation (currently parked)
 - See [instrumentation_plan.md](./instrumentation_plan.md) for Phase 4 details

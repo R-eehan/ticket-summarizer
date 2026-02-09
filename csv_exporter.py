@@ -105,6 +105,7 @@ class CSVExporter:
 
         # Define CSV columns (excluding 'updated_at' as per Phase 5 requirements)
         # Phase 6: Added triage/fix/overall split assessments
+        # Phase 7: Added gap area columns for coverage analysis
         fieldnames = [
             "ticket_id",
             "serial_no",
@@ -127,8 +128,12 @@ class CSVExporter:
             "was_diagnostics_used_reasoning",
             "triage_assessment",
             "triage_reasoning",
+            "triage_gap_area",           # Phase 7: Why Diagnostics can't detect
+            "triage_gap_description",    # Phase 7: Description for other_triage_gap
             "fix_assessment",
             "fix_reasoning",
+            "fix_gap_area",              # Phase 7: Why Diagnostics can't recommend fix
+            "fix_gap_description",       # Phase 7: Description for other_fix_gap
             "overall_assessment",
             "overall_reasoning",
             "diagnostics_confidence",
@@ -163,7 +168,7 @@ class CSVExporter:
                 capabilities = could_help.get("diagnostics_capability_matched", [])
                 capabilities_str = ", ".join(capabilities) if capabilities else ""
 
-                # Build row (Phase 6: triage/fix/overall split)
+                # Build row (Phase 6: triage/fix/overall split, Phase 7: gap areas)
                 row = {
                     "ticket_id": ticket.get("ticket_id", ""),
                     "serial_no": ticket.get("serial_no", ""),
@@ -186,8 +191,12 @@ class CSVExporter:
                     "was_diagnostics_used_reasoning": was_used.get("reasoning", ""),
                     "triage_assessment": could_help.get("triage_assessment", ""),
                     "triage_reasoning": could_help.get("triage_reasoning", ""),
+                    "triage_gap_area": could_help.get("triage_gap_area") or "",
+                    "triage_gap_description": could_help.get("triage_gap_description") or "",
                     "fix_assessment": could_help.get("fix_assessment", ""),
                     "fix_reasoning": could_help.get("fix_reasoning", ""),
+                    "fix_gap_area": could_help.get("fix_gap_area") or "",
+                    "fix_gap_description": could_help.get("fix_gap_description") or "",
                     "overall_assessment": could_help.get("overall_assessment", ""),
                     "overall_reasoning": could_help.get("overall_reasoning", ""),
                     "diagnostics_confidence": could_help.get("confidence", ""),

@@ -19,6 +19,7 @@
 - [ADR-011: JIRA URL as Source of Truth for Escalation](#adr-011-jira-url-as-source-of-truth-for-escalation)
 - [ADR-012: Escalation Signal in Diagnostics Analysis Only](#adr-012-escalation-signal-in-diagnostics-analysis-only)
 - [ADR-013: Separate CSV Files Per Analysis Type](#adr-013-separate-csv-files-per-analysis-type)
+- [ADR-014: Gap Area Taxonomy for Diagnostics Coverage Analysis](#adr-014-gap-area-taxonomy-for-diagnostics-coverage-analysis)
 
 ---
 
@@ -1721,6 +1722,224 @@ class CSVExporter:
 
 ---
 
+## ADR-014: Gap Area Taxonomy for Diagnostics Coverage Analysis
+
+**Status**: Accepted (Phase 7)
+
+**Decision Date**: 2025-12-09
+
+**Context**:
+
+When the Diagnostics analysis reveals that a ticket cannot be helped (triage_assessment = "no"/"maybe" or fix_assessment = "no"/"maybe"), we need to understand **WHY** to prioritize feature development. The existing `limitation_notes` field provides free-form text but lacks structure for programmatic analysis.
+
+**Problem**:
+- PM cannot easily pivot/aggregate limitation data in Google Sheets
+- No distinction between "can't detect" (triage gap) vs "can't recommend fix" (fix gap)
+- Free-form text doesn't enable trend analysis over time
+
+**Decision**:
+
+Implement **structured gap area taxonomy** with:
+- 12 triage gap categories (what Diagnostics can't detect)
+- 11 fix gap categories (what Diagnostics can't recommend)
+- "other" categories with mandatory descriptions for novel gaps
+- Gap fields only populated when assessment is "no" or "maybe" (null when "yes")
+
+**Rationale**:
+
+### Why Structured Taxonomy Over Free-Form Text?
+
+#### 1. Enables Pivot Table Analysis
+
+**Free-Form (`limitation_notes`)**:
+```
+"Element targeting issue but CSS selector is complex"
+"Integration with Salesforce not supported"
+"Requires engineering code fix"
+```
+- Can't aggregate: How many integration issues? How many CSS issues?
+- Must manually read each note to categorize
+
+**Structured (`triage_gap_area`, `fix_gap_area`)**:
+```
+triage_gap_area: "integration"
+fix_gap_area: "css_selector"
+```
+- Pivot table: `COUNT(triage_gap_area)` → 15 integration, 8 authentication, 12 latching
+- Immediate PM actionability: "Integration gaps are 25% of all triage failures"
+
+#### 2. Separates Detection vs Resolution Gaps
+
+**Key Insight**: Diagnostics has TWO capabilities:
+1. **Triage** (Identification): Can Diagnostics DETECT what's wrong?
+2. **Fix** (Resolution): Can Diagnostics RECOMMEND a self-service solution?
+
+**Why Separate?**:
+- Ticket may be identifiable but not fixable (triage=yes, fix=no)
+  - Example: Diagnostics shows "element not found" but fix requires complex CSS selector
+- Different roadmap priorities:
+  - Triage gaps → Expand Diagnostics' detection surface
+  - Fix gaps → Add fix recommendation capabilities
+
+**Taxonomy Design**:
+```python
+# Triage Gaps (12 categories) - WHY can't we DETECT?
+TRIAGE_GAP_AREAS = [
+    "integration",              # External systems (Salesforce, Excel)
+    "authentication",           # SSO, permissions, tokens
+    "network_infrastructure",   # VPN, connectivity, backend
+    "latching",                 # Wrong element detected
+    "element_hidden",           # Element obscured by UI
+    "theming_styling",          # Colors, fonts, appearance
+    "browser_extension",        # Browser/extension compatibility
+    "session_cookies",          # Session handling, cross-domain
+    "timing_performance",       # Page load, slow performance
+    "use_case_implementation",  # Not troubleshooting - "how to build X?"
+    "feature_request",          # Not troubleshooting - new functionality request
+    "other_triage_gap",         # Novel gap with description
+]
+
+# Fix Gaps (11 categories) - WHY can't we RECOMMEND?
+FIX_GAP_AREAS = [
+    "css_selector",             # Selector construction/modification
+    "rule_logic",               # AND/OR condition changes
+    "tag_assignment",           # Page/role tag additions
+    "flow_modification",        # Add steps, navigation changes
+    "element_precision",        # Element precision adjustments
+    "engineering_required",     # Backend bug, needs code fix
+    "integration_fix",          # External system fix needed
+    "authentication_fix",       # Auth/permission configuration
+    "extension_fix",            # Extension reinstall/update
+    "reselection_complex",      # Complex reselection guidance needed
+    "other_fix_gap",            # Novel gap with description
+]
+```
+
+#### 3. Captures Novel Gaps for Taxonomy Evolution
+
+**"Other" Categories with Mandatory Descriptions**:
+```json
+{
+  "triage_gap_area": "other_triage_gap",
+  "triage_gap_description": "Multi-tenant environment with complex iframe nesting causing element detection failures"
+}
+```
+
+**Benefits**:
+- Doesn't force-fit unusual cases into existing categories
+- PM can review "other" descriptions quarterly
+- Patterns in "other" descriptions → new taxonomy categories
+
+#### 4. Single Primary Gap (Not Multi-Value)
+
+**Decision**: Each assessment gets ONE gap area (the primary blocker)
+
+**Why Not Multi-Value?**:
+- Pivot tables work cleanly with single values
+- Forces LLM to identify ROOT cause, not list symptoms
+- Simpler CSV schema (no array serialization)
+
+**Example**:
+```
+Ticket: Element targeting fails AND selector is complex AND rule logic is wrong
+- triage_gap_area: "latching" (root cause - wrong element detected)
+- fix_gap_area: "css_selector" (primary fix blocker)
+```
+
+### CSV Output Structure
+
+**New Columns** (4 added):
+| Column | When Populated | Values |
+|--------|---------------|--------|
+| `triage_gap_area` | When triage_assessment = "no"/"maybe" | 12 predefined + description |
+| `triage_gap_description` | When `triage_gap_area = "other_triage_gap"` | Free text |
+| `fix_gap_area` | When fix_assessment = "no"/"maybe" | 11 predefined + description |
+| `fix_gap_description` | When `fix_gap_area = "other_fix_gap"` | Free text |
+
+**Column Placement** (immediately after respective reasoning fields):
+```
+triage_assessment
+triage_reasoning
+triage_gap_area          ← NEW
+triage_gap_description   ← NEW
+fix_assessment
+fix_reasoning
+fix_gap_area             ← NEW
+fix_gap_description      ← NEW
+overall_assessment
+```
+
+**Consequences**:
+
+### Positive Consequences
+1. ✅ **Enables Pivot Table Analysis**: PM can aggregate gaps by category in Google Sheets
+2. ✅ **Identifies Roadmap Priorities**: Clear data on where to invest (triage expansion vs fix capabilities)
+3. ✅ **Distinguishes Triage vs Fix**: Separate understanding of detection gaps vs resolution gaps
+4. ✅ **Captures Novel Patterns**: "other" categories with descriptions enable taxonomy evolution
+5. ✅ **Clean Data Model**: Single primary gap, null when no gap (assessment = "yes")
+
+### Negative Consequences
+1. ⚠️ **LLM Prompt Complexity**: Additional instructions for gap categorization
+   - **Mitigation**: Clear tables with when-to-use guidance in prompt
+2. ⚠️ **LLM May Suggest Values Outside Taxonomy**: LLM might use triage gap values for fix gaps or invent new categories
+   - **Mitigation**: Auto-remap invalid values to `other_*_gap` with original value preserved in description (see below)
+3. ⚠️ **Taxonomy Maintenance**: May need periodic updates as novel gaps emerge
+   - **Mitigation**: "other" categories capture novel cases for quarterly review
+
+### Auto-Remap Behavior (Phase 7 Enhancement - 2025-12-15)
+
+**Problem Discovered**: During Phase 7 testing, the LLM sometimes returns gap area values that are valid for one taxonomy but used in the wrong context. For example, `timing_performance` is a valid `TRIAGE_GAP_AREA` but was returned as a `fix_gap_area`, causing strict validation to fail and crash the entire ticket analysis.
+
+**Solution**: Instead of failing validation on invalid gap area values, the system now auto-remaps them:
+
+1. **Normalization Before Validation**: Invalid gap area values are detected and remapped BEFORE validation runs
+2. **Remap to "other_*_gap"**: Invalid `triage_gap_area` → `other_triage_gap`, invalid `fix_gap_area` → `other_fix_gap`
+3. **Preserve Original Value**: The original LLM-suggested value is stored in the description field with prefix `[Auto-remapped from 'X']`
+
+**Example**:
+```
+LLM Output:
+  fix_gap_area: "timing_performance"  // INVALID - not in FIX_GAP_AREAS
+
+After Normalization:
+  fix_gap_area: "other_fix_gap"
+  fix_gap_description: "[Auto-remapped from 'timing_performance'] LLM suggested this gap area which is not in the predefined taxonomy."
+```
+
+**Benefits**:
+- ✅ **No Data Loss**: Original LLM intent is preserved in description
+- ✅ **Pivot Tables Stay Clean**: Only valid taxonomy values appear in gap_area columns
+- ✅ **No Crashes**: Invalid values don't cause ticket processing failures
+- ✅ **Taxonomy Evolution**: PM can review "other" descriptions to identify patterns and expand taxonomy
+
+**Implementation**: See `_normalize_gap_areas()` method in [diagnostics_analyzer.py](../diagnostics_analyzer.py)
+
+**Alternatives Considered**:
+
+1. **Single Combined Gap Column** (rejected)
+   - **Con**: Can't distinguish triage vs fix gaps
+   - **Con**: Loses insight into WHERE Diagnostics needs enhancement
+
+2. **Multi-Value Gap Arrays** (rejected)
+   - **Con**: Complex pivot table analysis
+   - **Con**: LLM may list symptoms instead of root cause
+
+3. **Enhanced Free-Form Only** (rejected)
+   - **Con**: Can't aggregate programmatically
+   - **Con**: PM must manually read and categorize each limitation note
+
+4. **Numeric Severity Scores** (rejected)
+   - **Con**: Doesn't identify WHAT the gap is, only HOW BAD
+   - **Con**: PM needs category, not severity, for roadmap prioritization
+
+**References**:
+- [Phase 7 in implementation_plan.md](./implementation_plan.md#phase-7-diagnostics-gap-analysis)
+- [config.py:TRIAGE_GAP_AREAS](../config.py)
+- [config.py:FIX_GAP_AREAS](../config.py)
+- [ADR-009: Ternary Assessment for Diagnostics Analysis](#adr-009-ternary-assessment-for-diagnostics-analysis)
+
+---
+
 ## Document Maintenance
 
 **How to Add a New ADR**:
@@ -1762,6 +1981,6 @@ class CSVExporter:
 
 ---
 
-**Document Version**: 1.1.0
-**Last Updated**: 2025-11-17 (Phase 5 ADRs added)
-**Next Review**: After Phase 5 completion
+**Document Version**: 1.2.1
+**Last Updated**: 2025-12-15 (Phase 7 auto-remap fix added to ADR-014)
+**Next Review**: After Phase 7 testing completion

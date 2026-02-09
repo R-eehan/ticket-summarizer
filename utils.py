@@ -632,3 +632,67 @@ def validate_diagnostics_usage(usage: str) -> bool:
     valid_usages = ["yes", "no", "unknown"]
 
     return usage_normalized in valid_usages
+
+
+# ============================================================================
+# DIAGNOSTICS GAP ANALYSIS UTILITIES (Phase 7)
+# ============================================================================
+
+def validate_triage_gap_area(value: Optional[str]) -> bool:
+    """
+    Validate triage_gap_area against allowed values.
+
+    This field identifies WHY Diagnostics cannot detect/identify an issue.
+    Only valid when triage_assessment is "no" or "maybe".
+    Must be null when triage_assessment is "yes".
+
+    Args:
+        value: Gap area value from LLM (one of TRIAGE_GAP_AREAS or None)
+
+    Returns:
+        True if value is valid (either None or in TRIAGE_GAP_AREAS), False otherwise
+
+    Example:
+        >>> validate_triage_gap_area("integration")
+        True
+        >>> validate_triage_gap_area("authentication")
+        True
+        >>> validate_triage_gap_area(None)
+        True
+        >>> validate_triage_gap_area("invalid_gap")
+        False
+    """
+    if value is None:
+        return True
+
+    return value in config.TRIAGE_GAP_AREAS
+
+
+def validate_fix_gap_area(value: Optional[str]) -> bool:
+    """
+    Validate fix_gap_area against allowed values.
+
+    This field identifies WHY Diagnostics cannot recommend a self-service fix.
+    Only valid when fix_assessment is "no" or "maybe".
+    Must be null when fix_assessment is "yes".
+
+    Args:
+        value: Gap area value from LLM (one of FIX_GAP_AREAS or None)
+
+    Returns:
+        True if value is valid (either None or in FIX_GAP_AREAS), False otherwise
+
+    Example:
+        >>> validate_fix_gap_area("css_selector")
+        True
+        >>> validate_fix_gap_area("engineering_required")
+        True
+        >>> validate_fix_gap_area(None)
+        True
+        >>> validate_fix_gap_area("invalid_gap")
+        False
+    """
+    if value is None:
+        return True
+
+    return value in config.FIX_GAP_AREAS

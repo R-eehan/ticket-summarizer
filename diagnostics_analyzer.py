@@ -5,10 +5,12 @@ This module analyzes synthesized tickets to determine:
 1. Was Diagnostics feature used? (by customer OR support team)
 2. Could Diagnostics have helped? (to diagnose OR resolve the issue)
    - Phase 6 Enhancement: Split into TRIAGE (identification) vs FIX (resolution) assessments
+   - Phase 7 Enhancement: Gap analysis when Diagnostics cannot help
 
 Phase 3c: Multi-Model Support
 Phase 4: Added OpenTelemetry tracing (Tier 2 - Business Logic Spans)
 Phase 6: Triage vs Fix split assessment with derived overall_assessment
+Phase 7: Gap area taxonomy for coverage analysis (triage_gap_area, fix_gap_area)
 Uses LLM provider abstraction (Gemini or Azure OpenAI) with Whatfix Diagnostics product knowledge.
 """
 
@@ -163,6 +165,9 @@ class DiagnosticsAnalyzer:
                     span.set_attribute("triage_assessment", analysis_result.get("could_diagnostics_help", {}).get("triage_assessment", "unknown"))
                     span.set_attribute("fix_assessment", analysis_result.get("could_diagnostics_help", {}).get("fix_assessment", "unknown"))
                     span.set_attribute("overall_assessment", analysis_result.get("could_diagnostics_help", {}).get("overall_assessment", "unknown"))
+                    # Phase 7: Add gap area attributes
+                    span.set_attribute("triage_gap_area", analysis_result.get("could_diagnostics_help", {}).get("triage_gap_area") or "none")
+                    span.set_attribute("fix_gap_area", analysis_result.get("could_diagnostics_help", {}).get("fix_gap_area") or "none")
                     span.set_attribute("response.length", len(response.text))
 
                     self.logger.info(f"Successfully analyzed ticket {ticket_id}")
@@ -230,6 +235,9 @@ class DiagnosticsAnalyzer:
         Phase 6 Update: The LLM now returns triage and fix assessments separately.
         The overall_assessment is derived programmatically after parsing.
 
+        Phase 7 Update: Gap areas are normalized before validation - invalid values
+        are auto-remapped to "other_*_gap" with original value preserved in description.
+
         Expected JSON structure:
         - was_diagnostics_used: {llm_assessment, confidence, reasoning}
         - could_diagnostics_help: {triage_assessment, triage_reasoning, fix_assessment, fix_reasoning,
@@ -259,6 +267,10 @@ class DiagnosticsAnalyzer:
             # Parse JSON
             analysis_data = json.loads(json_str)
 
+            # Phase 7: Normalize gap areas before validation
+            # This auto-remaps invalid values to "other_*_gap" with original value in description
+            analysis_data = self._normalize_gap_areas(analysis_data, ticket_id)
+
             # Validate required fields
             if not self._validate_analysis_structure(analysis_data, ticket_id):
                 return None
@@ -274,19 +286,91 @@ class DiagnosticsAnalyzer:
             self.logger.error(f"Failed to parse diagnostics response for ticket {ticket_id}: {e}")
             return None
 
+    def _normalize_gap_areas(self, analysis_data: Dict, ticket_id: str) -> Dict:
+        """
+        Normalize gap area values, auto-remapping invalid values to "other_*_gap".
+
+        Phase 7 Enhancement: Instead of failing validation on invalid gap areas,
+        this method preserves the LLM's intent by:
+        1. Remapping invalid triage_gap_area to "other_triage_gap"
+        2. Remapping invalid fix_gap_area to "other_fix_gap"
+        3. Storing the original invalid value in the corresponding description field
+
+        This ensures:
+        - No data loss (original LLM value is preserved)
+        - Pivot tables remain clean (only valid taxonomy values in gap_area columns)
+        - PM can review "other" descriptions to evolve taxonomy over time
+
+        Args:
+            analysis_data: Parsed analysis dictionary from LLM
+            ticket_id: Ticket ID for logging
+
+        Returns:
+            Analysis data with normalized gap areas
+        """
+        could_help = analysis_data.get("could_diagnostics_help", {})
+
+        # Normalize triage_gap_area
+        triage_gap = could_help.get("triage_gap_area")
+        if triage_gap is not None and triage_gap not in config.TRIAGE_GAP_AREAS:
+            original_value = triage_gap
+            existing_description = could_help.get("triage_gap_description") or ""
+
+            # Build new description with original value
+            if existing_description:
+                new_description = f"[Auto-remapped from '{original_value}'] {existing_description}"
+            else:
+                new_description = f"[Auto-remapped from '{original_value}'] LLM suggested this gap area which is not in the predefined taxonomy."
+
+            could_help["triage_gap_area"] = "other_triage_gap"
+            could_help["triage_gap_description"] = new_description
+
+            self.logger.warning(
+                f"Ticket {ticket_id}: Invalid triage_gap_area '{original_value}' auto-remapped to 'other_triage_gap'. "
+                f"Original value preserved in triage_gap_description."
+            )
+
+        # Normalize fix_gap_area
+        fix_gap = could_help.get("fix_gap_area")
+        if fix_gap is not None and fix_gap not in config.FIX_GAP_AREAS:
+            original_value = fix_gap
+            existing_description = could_help.get("fix_gap_description") or ""
+
+            # Build new description with original value
+            if existing_description:
+                new_description = f"[Auto-remapped from '{original_value}'] {existing_description}"
+            else:
+                new_description = f"[Auto-remapped from '{original_value}'] LLM suggested this gap area which is not in the predefined taxonomy."
+
+            could_help["fix_gap_area"] = "other_fix_gap"
+            could_help["fix_gap_description"] = new_description
+
+            self.logger.warning(
+                f"Ticket {ticket_id}: Invalid fix_gap_area '{original_value}' auto-remapped to 'other_fix_gap'. "
+                f"Original value preserved in fix_gap_description."
+            )
+
+        # Update the analysis data
+        analysis_data["could_diagnostics_help"] = could_help
+        return analysis_data
+
     def _validate_analysis_structure(self, analysis_data: Dict, ticket_id: str) -> bool:
         """
         Validate the structure and values of the diagnostics analysis.
 
         Phase 6 Update: Now validates triage_assessment and fix_assessment instead of single assessment.
+        Phase 7 Update: Gap area validation is now a safety net - invalid values are normalized
+        to "other_*_gap" BEFORE this method is called (see _normalize_gap_areas).
 
         Checks:
         - Required fields exist
         - Enum values are valid (yes/no/unknown, yes/no/maybe, confident/not confident)
         - Reasoning fields are not empty
+        - Gap areas are present when assessment is "no" or "maybe"
+        - Gap area values are in the predefined taxonomy (safety check after normalization)
 
         Args:
-            analysis_data: Parsed analysis dictionary
+            analysis_data: Parsed analysis dictionary (already normalized)
             ticket_id: Ticket ID for logging
 
         Returns:
@@ -359,6 +443,50 @@ class DiagnosticsAnalyzer:
                     f"Empty fix_reasoning for ticket {ticket_id}"
                 )
                 return False
+
+            # Phase 7: Validate triage_gap_area (required when triage_assessment != "yes")
+            if triage_assessment in ["no", "maybe"]:
+                triage_gap = could_help.get("triage_gap_area")
+                if not triage_gap:
+                    self.logger.warning(
+                        f"Missing triage_gap_area for ticket {ticket_id} "
+                        f"(required when triage_assessment={triage_assessment})"
+                    )
+                    return False
+                if not utils.validate_triage_gap_area(triage_gap):
+                    self.logger.warning(
+                        f"Invalid triage_gap_area '{triage_gap}' for ticket {ticket_id}. "
+                        f"Expected one of: {config.TRIAGE_GAP_AREAS}"
+                    )
+                    return False
+                # If other_triage_gap, description is required
+                if triage_gap == "other_triage_gap" and not could_help.get("triage_gap_description"):
+                    self.logger.warning(
+                        f"Missing triage_gap_description for other_triage_gap in ticket {ticket_id}"
+                    )
+                    return False
+
+            # Phase 7: Validate fix_gap_area (required when fix_assessment != "yes")
+            if fix_assessment in ["no", "maybe"]:
+                fix_gap = could_help.get("fix_gap_area")
+                if not fix_gap:
+                    self.logger.warning(
+                        f"Missing fix_gap_area for ticket {ticket_id} "
+                        f"(required when fix_assessment={fix_assessment})"
+                    )
+                    return False
+                if not utils.validate_fix_gap_area(fix_gap):
+                    self.logger.warning(
+                        f"Invalid fix_gap_area '{fix_gap}' for ticket {ticket_id}. "
+                        f"Expected one of: {config.FIX_GAP_AREAS}"
+                    )
+                    return False
+                # If other_fix_gap, description is required
+                if fix_gap == "other_fix_gap" and not could_help.get("fix_gap_description"):
+                    self.logger.warning(
+                        f"Missing fix_gap_description for other_fix_gap in ticket {ticket_id}"
+                    )
+                    return False
 
             # Validate confidence
             if not utils.validate_confidence(could_help.get("confidence", "")):
