@@ -84,7 +84,7 @@ A terminal-based application that fetches Zendesk support tickets, uses AI (Goog
    ```env
    ZENDESK_API_KEY=your_zendesk_api_token_here
    ZENDESK_SUBDOMAIN=whatfix
-   ZENDESK_EMAIL=avinash.pai@whatfix.com
+   ZENDESK_EMAIL=your_zendesk_email_here
    ```
 
    **Required for Gemini (default LLM):**
