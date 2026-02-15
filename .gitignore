@@ -56,6 +56,8 @@ test_*.csv
 # Internal/Working Documents
 Whatfix_*.md
 diagnostics_summary.md
+WFE error messages - Error Codes - Primary & Secondary.csv
+Workflow - PM Analyses sheet - Top 16 engaged - Support ticket analysis with huma.csv
 
 # OS
 .DS_Store
