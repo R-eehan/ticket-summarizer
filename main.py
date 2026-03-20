@@ -3,7 +3,7 @@
 Zendesk Ticket Summarizer - Main Entry Point
 
 A terminal-based application that fetches Zendesk tickets and uses
-Google Gemini 2.5 Pro to generate comprehensive summaries.
+LLMs (Azure OpenAI / Google Gemini) to generate comprehensive summaries.
 
 Usage:
     python main.py --input <csv_path> --analysis-type <pod|diagnostics|both>
@@ -11,6 +11,7 @@ Usage:
 
 import sys
 import csv
+import copy
 import json
 import asyncio
 import time
@@ -26,7 +27,7 @@ from rich.table import Table
 import config
 import utils
 from fetcher import ZendeskFetcher
-from synthesizer import GeminiSynthesizer
+from synthesizer import TicketSynthesizer
 from categorizer import TicketCategorizer
 from diagnostics_analyzer import DiagnosticsAnalyzer
 from csv_exporter import CSVExporter
@@ -58,10 +59,16 @@ class TicketSummarizer:
         self.console = Console()
         self.analysis_type = analysis_type
         self.model_provider = model_provider
+        # Create shared rate limiter per provider (prevents doubling in 'both' mode)
+        if model_provider == "azure":
+            self._llm_semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self._llm_semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+
         self.fetcher = ZendeskFetcher()
-        self.synthesizer = GeminiSynthesizer(model_provider=model_provider)  # Phase 3c: Multi-model
-        self.categorizer = TicketCategorizer()  # Phase 3a: POD categorization
-        self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider)  # Phase 3b + 3c
+        self.synthesizer = TicketSynthesizer(model_provider=model_provider, semaphore=self._llm_semaphore)
+        self.categorizer = TicketCategorizer(model_provider=model_provider, semaphore=self._llm_semaphore)
+        self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider, semaphore=self._llm_semaphore)
 
         # Statistics tracking for all phases
         self.stats = {
@@ -213,7 +220,7 @@ class TicketSummarizer:
         Returns:
             List of synthesized ticket dictionaries
         """
-        self.console.print("\n[bold cyan][PHASE 2] Synthesizing with Gemini 2.5 Pro[/bold cyan]")
+        self.console.print(f"\n[bold cyan][PHASE 2] Synthesizing with {self.model_provider.upper()}[/bold cyan]")
 
         # Filter tickets that were successfully fetched
         tickets_to_synthesize = [
@@ -434,7 +441,7 @@ class TicketSummarizer:
 
                     # Track "could_diagnostics_help" breakdown
                     could_help = diag_analysis.get('could_diagnostics_help', {})
-                    assessment = could_help.get('assessment', '').lower()
+                    assessment = could_help.get('overall_assessment', '').lower()
                     if assessment in ['yes', 'no', 'maybe']:
                         self.stats['diagnostics_could_help'][assessment] += 1
 
@@ -648,12 +655,12 @@ class TicketSummarizer:
             pod_filename = f"output_pod_{timestamp}.json"
             diagnostics_filename = f"output_diagnostics_{timestamp}.json"
 
-            # Create POD-specific output
-            pod_output = output.copy()
+            # Create POD-specific output (deep copy to avoid shared metadata dict)
+            pod_output = copy.deepcopy(output)
             pod_output["metadata"]["analysis_type"] = "pod"
 
             # Create Diagnostics-specific output
-            diag_output = output.copy()
+            diag_output = copy.deepcopy(output)
             diag_output["metadata"]["analysis_type"] = "diagnostics"
 
             # Save both JSON files
@@ -880,11 +887,16 @@ class TicketSummarizer:
             csv_path: Path to input CSV file
         """
         try:
-            # Display header
+            # Display header with actual provider info
+            provider_display = {
+                "gemini": f"Gemini ({config.GEMINI_MODEL})",
+                "azure": f"Azure OpenAI ({config.AZURE_OPENAI_DEPLOYMENT_NAME or 'gpt-4o'})"
+            }
+            provider_label = provider_display.get(self.model_provider, self.model_provider)
             self.console.print(
                 Panel.fit(
                     "[bold cyan]Zendesk Ticket Summarizer[/bold cyan]\n"
-                    "Powered by Gemini 2.5 Pro",
+                    f"Powered by {provider_label}",
                     border_style="cyan"
                 )
             )
@@ -938,11 +950,12 @@ class TicketSummarizer:
                     pod_task, diag_task
                 )
 
-                # Merge results (both should have same tickets, just different analysis fields)
-                # We'll use the categorized_tickets as base and merge diagnostics analysis
-                for i, ticket in enumerate(categorized_tickets):
-                    if i < len(diagnostics_tickets):
-                        diag_ticket = diagnostics_tickets[i]
+                # Merge results by ticket_id (safe, order-independent)
+                diag_by_id = {t.get('ticket_id'): t for t in diagnostics_tickets}
+                for ticket in categorized_tickets:
+                    tid = ticket.get('ticket_id')
+                    diag_ticket = diag_by_id.get(tid)
+                    if diag_ticket:
                         if 'diagnostics_analysis' in diag_ticket:
                             ticket['diagnostics_analysis'] = diag_ticket['diagnostics_analysis']
                         if 'diagnostics_analysis_status' in diag_ticket:
@@ -983,7 +996,7 @@ def main():
     """
     # Set up argument parser
     parser = argparse.ArgumentParser(
-        description="Zendesk Ticket Summarizer - Powered by Gemini 2.5 Pro",
+        description="Zendesk Ticket Summarizer - Multi-LLM Support (Azure OpenAI / Gemini)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

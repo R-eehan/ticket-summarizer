@@ -7,6 +7,7 @@ Implements rate limiting, retry logic, and response parsing.
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Callable
@@ -14,9 +15,10 @@ from typing import Dict, List, Optional, Callable
 import config
 import utils
 from llm_provider import LLMProviderFactory
+from schemas import TicketSynthesis
 
 
-class GeminiSynthesizer:
+class TicketSynthesizer:
     """
     Async LLM client for ticket synthesis with rate limiting.
 
@@ -24,16 +26,13 @@ class GeminiSynthesizer:
     Now supports both Gemini and Azure OpenAI via LLMProviderFactory.
     """
 
-    def __init__(self, model_provider: str = "gemini"):
+    def __init__(self, model_provider: str = "gemini", semaphore: asyncio.Semaphore = None):
         """
         Initialize synthesizer with specified LLM provider.
 
         Args:
             model_provider: LLM provider name ("gemini" or "azure")
-                           Defaults to "gemini" for backward compatibility
-
-        Raises:
-            ValueError: If provider credentials are missing or invalid
+            semaphore: Optional shared semaphore for rate limiting (used in 'both' mode)
         """
         self.logger = logging.getLogger("ticket_summarizer.synthesizer")
         self.model_provider = model_provider
@@ -42,8 +41,13 @@ class GeminiSynthesizer:
         self.logger.info(f"Initializing synthesizer with model provider: {model_provider}")
         self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting
-        self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+        # Rate limiting — provider-aware, supports shared semaphore
+        if semaphore:
+            self.semaphore = semaphore
+        elif model_provider == "azure":
+            self.semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
         self.logger.info(f"Synthesizer initialized with {model_provider} provider")
 
@@ -61,6 +65,10 @@ class GeminiSynthesizer:
         description = utils.strip_html(ticket_data.get('description', 'No description'))
         comments = ticket_data.get('comments', [])
 
+        # Extract support agent's root cause (Phase 6 enhancement)
+        custom_fields = ticket_data.get('custom_fields', {})
+        support_root_cause = custom_fields.get('support_root_cause', 'Not provided')
+
         # Format comment thread
         comment_thread = utils.format_comment_thread(comments)
 
@@ -68,10 +76,29 @@ class GeminiSynthesizer:
         prompt = config.LLM_PROMPT_TEMPLATE.format(
             subject=subject,
             description=description,
-            all_comments=comment_thread
+            all_comments=comment_thread,
+            support_root_cause=support_root_cause
         )
 
         return prompt
+
+    def parse_structured_response(self, response_text: str) -> Dict:
+        """Parse structured JSON response from LLM. Falls back to regex parsing."""
+        try:
+            data = json.loads(response_text)
+            synthesis = {
+                "issue_reported": data.get("issue_reported", ""),
+                "root_cause": data.get("root_cause", ""),
+                "summary": data.get("summary", ""),
+                "resolution": data.get("resolution", ""),
+            }
+            missing = [k for k, v in synthesis.items() if not v]
+            if missing:
+                self.logger.warning(f"Structured response missing fields: {missing}")
+            return synthesis
+        except (json.JSONDecodeError, TypeError):
+            self.logger.debug("Structured JSON parsing failed, falling back to regex")
+            return self.parse_response(response_text)
 
     def parse_response(self, response_text: str) -> Dict:
         """
@@ -167,11 +194,9 @@ class GeminiSynthesizer:
                 # Format the prompt
                 prompt = self.format_prompt(ticket_data)
 
-                # Call LLM API (via provider abstraction, synchronous but wrapped in async)
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.llm_client.generate_content(prompt)
+                # Call LLM API with structured output schema
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_content, prompt, TicketSynthesis
                 )
 
                 # Extract response text
@@ -181,8 +206,8 @@ class GeminiSynthesizer:
                 response_text = response.text
                 self.logger.debug(f"Received response for ticket {ticket_id}")
 
-                # Parse the response
-                synthesis = self.parse_response(response_text)
+                # Parse structured JSON response (falls back to regex if JSON fails)
+                synthesis = self.parse_structured_response(response_text)
 
                 # Add to ticket data
                 result = ticket_data.copy()
@@ -190,9 +215,11 @@ class GeminiSynthesizer:
 
                 self.logger.info(f"Successfully synthesized ticket {ticket_id}")
 
-                # Add delay to respect free tier rate limits
-                if config.GEMINI_REQUEST_DELAY > 0:
+                # Add delay to respect rate limits (provider-aware)
+                if self.model_provider == "gemini" and config.GEMINI_REQUEST_DELAY > 0:
                     await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                elif self.model_provider == "azure" and config.AZURE_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.AZURE_REQUEST_DELAY)
 
                 return result
 

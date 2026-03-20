@@ -10,10 +10,12 @@ Rationale: Allows switching between LLM providers without changing business logi
 enabling cost optimization and avoiding free-tier API limits.
 """
 
+import json
 import logging
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Type
 from openai import AzureOpenAI
+from pydantic import BaseModel
 
 from google import genai
 
@@ -97,29 +99,24 @@ class AzureOpenAIClient:
         self.deployment_name = config.AZURE_OPENAI_DEPLOYMENT_NAME
         self.logger.info(f"Azure OpenAI client initialized with deployment: {self.deployment_name}")
 
-    def generate_content(self, prompt: str) -> LLMResponse:
+    def generate_content(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> LLMResponse:
         """
         Generate content using Azure OpenAI (synchronous).
 
-        Matches Gemini's generate_content() interface for seamless switching.
-        Uses chat completions API with system + user message pattern.
-
         Args:
             prompt: The prompt text to send to the LLM
+            response_schema: Optional Pydantic model class for structured JSON output
 
         Returns:
             LLMResponse object with .text property containing generated content
-
-        Raises:
-            utils.GeminiAPIError: Renamed to match existing error handling (actually Azure error)
         """
         try:
             self.logger.debug(f"Calling Azure OpenAI with deployment: {self.deployment_name}")
 
-            # Call Azure OpenAI chat completions API
-            response = self.client.chat.completions.create(
-                model=self.deployment_name,  # This is the deployment name, not model name
-                messages=[
+            # Build API call kwargs
+            kwargs = {
+                "model": self.deployment_name,
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are an expert support ticket analyst. Provide accurate, structured analysis based only on the provided ticket data."
@@ -129,23 +126,34 @@ class AzureOpenAIClient:
                         "content": prompt
                     }
                 ],
-                temperature=0.3,  # Lower temperature for more consistent, factual responses
-                max_tokens=2000,  # Sufficient for ticket analysis
-                top_p=0.95
-            )
+                "temperature": 0.3,
+                "max_completion_tokens": 2000,
+                "top_p": 0.95,
+            }
 
-            # Extract text from response
+            # Add structured output format if schema provided
+            if response_schema:
+                schema = response_schema.model_json_schema()
+                # Ensure additionalProperties: false on all objects for Azure strict mode
+                _add_additional_properties_false(schema)
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_schema.__name__,
+                        "strict": True,
+                        "schema": schema
+                    }
+                }
+
+            response = self.client.chat.completions.create(**kwargs)
+
             generated_text = response.choices[0].message.content
-
             self.logger.debug(f"Azure OpenAI response received: {len(generated_text)} characters")
 
-            # Return wrapped response with consistent interface
             return LLMResponse(text=generated_text, raw_response=response)
 
         except Exception as e:
             self.logger.error(f"Azure OpenAI API call failed: {e}")
-            # Use GeminiAPIError for consistency with existing error handling
-            # (Will rename to LLMAPIError in future refactoring)
             raise utils.GeminiAPIError(f"Azure OpenAI API call failed: {e}")
 
 
@@ -185,38 +193,63 @@ class GeminiClient:
 
         self.logger.info(f"Gemini client initialized with model: {self.model_name}")
 
-    def generate_content(self, prompt: str) -> Any:
+    def generate_content(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> LLMResponse:
         """
         Generate content using Gemini (synchronous).
 
-        Uses the new google-genai SDK client.models.generate_content() API.
-        Returns response object with .text property for backward compatibility.
-
         Args:
             prompt: The prompt text to send to the LLM
+            response_schema: Optional Pydantic model class for structured JSON output
 
         Returns:
-            Gemini response object with .text property
-
-        Raises:
-            utils.GeminiAPIError: If API call fails
+            LLMResponse object with .text property
         """
         try:
             self.logger.debug(f"Calling Gemini with model: {self.model_name}")
 
-            # Call new Google GenAI SDK (returns response with .text property)
+            # Build config
+            gen_config = {
+                "temperature": 0.2,  # Lower for analytical tasks (Gemini 2.5)
+            }
+
+            # Add structured output if schema provided
+            if response_schema:
+                gen_config["response_mime_type"] = "application/json"
+                gen_config["response_schema"] = response_schema
+
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=prompt
+                contents=prompt,
+                config=gen_config
             )
 
             self.logger.debug(f"Gemini response received: {len(response.text)} characters")
 
-            return response
+            return LLMResponse(text=response.text, raw_response=response)
 
         except Exception as e:
             self.logger.error(f"Gemini API call failed: {e}")
             raise utils.GeminiAPIError(f"Gemini API call failed: {e}")
+
+
+# ============================================================================
+# SCHEMA HELPERS
+# ============================================================================
+
+def _add_additional_properties_false(schema: dict):
+    """Recursively add additionalProperties: false to all objects in a JSON schema.
+    Required for Azure OpenAI strict structured outputs."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" or "properties" in schema:
+            schema["additionalProperties"] = False
+        # Process $defs (Pydantic v2 puts nested models here)
+        for key, value in schema.items():
+            if isinstance(value, dict):
+                _add_additional_properties_false(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _add_additional_properties_false(item)
 
 
 # ============================================================================

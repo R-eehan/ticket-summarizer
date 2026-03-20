@@ -5,13 +5,14 @@ Categorizes synthesized tickets into PODs using Gemini LLM with confidence scori
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Callable
-from google import genai
-
 import config
 import utils
+from llm_provider import LLMProviderFactory
+from schemas import TicketCategorization
 
 
 class TicketCategorizer:
@@ -30,27 +31,29 @@ class TicketCategorizer:
     - Comprehensive validation and error handling
     """
 
-    def __init__(self):
+    def __init__(self, model_provider: str = "gemini", semaphore: asyncio.Semaphore = None):
         """
-        Initialize the categorizer with Gemini model and rate limiting.
+        Initialize the categorizer with specified LLM provider and rate limiting.
 
-        Sets up:
-        - Logger for tracking categorization operations
-        - Gemini client (new google-genai SDK)
-        - Rate limiting semaphore (5 concurrent max)
-        - Model name configuration
+        Args:
+            model_provider: LLM provider name ("gemini" or "azure")
+            semaphore: Optional shared semaphore for rate limiting (used in 'both' mode)
         """
         self.logger = logging.getLogger("ticket_summarizer.categorizer")
+        self.model_provider = model_provider
 
-        # Initialize new unified Google GenAI client
-        self.client = genai.Client(api_key=config.GEMINI_API_KEY)
-        self.model_name = config.GEMINI_MODEL
+        # Initialize LLM provider using factory pattern
+        self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting: Max 5 concurrent Gemini API calls
-        # Prevents hitting API rate limits while maintaining good throughput
-        self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+        # Rate limiting — provider-aware, supports shared semaphore
+        if semaphore:
+            self.semaphore = semaphore
+        elif model_provider == "azure":
+            self.semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
-        self.logger.info(f"Initialized Categorizer with model: {self.model_name}")
+        self.logger.info(f"Initialized Categorizer with provider: {model_provider}")
 
     def format_categorization_prompt(self, ticket_data: Dict) -> str:
         """
@@ -97,6 +100,30 @@ class TicketCategorizer:
         )
 
         return prompt
+
+    def parse_structured_response(self, response_text: str) -> Dict:
+        """Parse structured JSON response. Falls back to regex parsing."""
+        try:
+            data = json.loads(response_text)
+            categorization = {
+                "primary_pod": data.get("primary_pod", ""),
+                "reasoning": data.get("reasoning", ""),
+                "confidence": data.get("confidence", "not confident"),
+                "confidence_reason": data.get("confidence_reason", ""),
+                "alternative_pods": data.get("alternative_pods", []),
+                "alternative_reasoning": data.get("alternative_reasoning"),
+                "metadata": {
+                    "keywords_matched": [],
+                    "decision_factors": []
+                }
+            }
+            # Validate POD
+            if categorization["primary_pod"] and not utils.validate_pod(categorization["primary_pod"]):
+                self.logger.warning(f"Invalid POD '{categorization['primary_pod']}' from structured output")
+            return categorization
+        except (json.JSONDecodeError, TypeError):
+            self.logger.debug("Structured JSON parsing failed, falling back to regex")
+            return self.parse_categorization_response(response_text)
 
     def parse_categorization_response(self, response_text: str) -> Dict:
         """
@@ -291,28 +318,22 @@ class TicketCategorizer:
                 # Prompt includes all POD definitions and categorization logic
                 prompt = self.format_categorization_prompt(ticket_data)
 
-                # Step 3: Call Gemini LLM for categorization (new google-genai SDK)
-                # Run synchronous API call in executor to avoid blocking
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_content(
-                        model=self.model_name,
-                        contents=prompt
-                    )
+                # Step 3: Call LLM for categorization with structured output
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_content, prompt, TicketCategorization
                 )
 
                 # Validate response
                 if not response or not response.text:
                     raise utils.GeminiAPIError(
-                        f"Empty response from Gemini for ticket {ticket_id}"
+                        f"Empty response from LLM for ticket {ticket_id}"
                     )
 
                 response_text = response.text
                 self.logger.debug(f"Received categorization response for ticket {ticket_id}")
 
-                # Step 4: Parse LLM response into structured categorization data
-                categorization = self.parse_categorization_response(response_text)
+                # Step 4: Parse structured JSON (falls back to regex)
+                categorization = self.parse_structured_response(response_text)
 
                 # Step 5: Add categorization to ticket data
                 result = ticket_data.copy()
@@ -324,9 +345,11 @@ class TicketCategorizer:
                     f"(confidence: {categorization['confidence']})"
                 )
 
-                # Add delay to respect free tier rate limits
-                if config.GEMINI_REQUEST_DELAY > 0:
+                # Add delay to respect rate limits (provider-aware)
+                if self.model_provider == "gemini" and config.GEMINI_REQUEST_DELAY > 0:
                     await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                elif self.model_provider == "azure" and config.AZURE_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.AZURE_REQUEST_DELAY)
 
                 return result
 
