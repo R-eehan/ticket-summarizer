@@ -48,12 +48,10 @@ ROOT_CAUSE_FIELD_ID = 360024846991
 # ============================================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Gemini key validation is lazy — happens in GeminiClient.__init__() (llm_provider.py)
+# This allows Azure-only usage without requiring Gemini credentials
 
-# Validate Gemini credentials
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable is not set")
-
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ============================================================================
 # AZURE OPENAI CONFIGURATION (Phase 3c)
@@ -62,7 +60,7 @@ GEMINI_MODEL = "gemini-flash-latest"
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
 # Validate Azure credentials (only if Azure is chosen as provider)
 # Validation happens at runtime in llm_provider.py to allow Gemini-only usage

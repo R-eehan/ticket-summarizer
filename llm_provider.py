@@ -130,7 +130,7 @@ class AzureOpenAIClient:
                     }
                 ],
                 temperature=0.3,  # Lower temperature for more consistent, factual responses
-                max_tokens=2000,  # Sufficient for ticket analysis
+                max_completion_tokens=2000,  # Sufficient for ticket analysis
                 top_p=0.95
             )
 

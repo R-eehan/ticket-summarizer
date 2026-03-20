@@ -8,10 +8,9 @@ import asyncio
 import logging
 import re
 from typing import Dict, List, Optional, Callable
-from google import genai
-
 import config
 import utils
+from llm_provider import LLMProviderFactory
 
 
 class TicketCategorizer:
@@ -30,27 +29,23 @@ class TicketCategorizer:
     - Comprehensive validation and error handling
     """
 
-    def __init__(self):
+    def __init__(self, model_provider: str = "gemini"):
         """
-        Initialize the categorizer with Gemini model and rate limiting.
+        Initialize the categorizer with specified LLM provider and rate limiting.
 
-        Sets up:
-        - Logger for tracking categorization operations
-        - Gemini client (new google-genai SDK)
-        - Rate limiting semaphore (5 concurrent max)
-        - Model name configuration
+        Args:
+            model_provider: LLM provider name ("gemini" or "azure")
         """
         self.logger = logging.getLogger("ticket_summarizer.categorizer")
+        self.model_provider = model_provider
 
-        # Initialize new unified Google GenAI client
-        self.client = genai.Client(api_key=config.GEMINI_API_KEY)
-        self.model_name = config.GEMINI_MODEL
+        # Initialize LLM provider using factory pattern
+        self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting: Max 5 concurrent Gemini API calls
-        # Prevents hitting API rate limits while maintaining good throughput
+        # Rate limiting
         self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
-        self.logger.info(f"Initialized Categorizer with model: {self.model_name}")
+        self.logger.info(f"Initialized Categorizer with provider: {model_provider}")
 
     def format_categorization_prompt(self, ticket_data: Dict) -> str:
         """
@@ -291,15 +286,9 @@ class TicketCategorizer:
                 # Prompt includes all POD definitions and categorization logic
                 prompt = self.format_categorization_prompt(ticket_data)
 
-                # Step 3: Call Gemini LLM for categorization (new google-genai SDK)
-                # Run synchronous API call in executor to avoid blocking
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_content(
-                        model=self.model_name,
-                        contents=prompt
-                    )
+                # Step 3: Call LLM for categorization (via provider abstraction)
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_content, prompt
                 )
 
                 # Validate response
