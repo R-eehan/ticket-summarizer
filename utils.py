@@ -26,9 +26,13 @@ class ZendeskAPIError(Exception):
     pass
 
 
-class GeminiAPIError(Exception):
-    """Raised when Gemini API calls fail."""
+class LLMAPIError(Exception):
+    """Raised when LLM API calls fail (Azure OpenAI or Gemini)."""
     pass
+
+
+# Backward compatibility alias
+GeminiAPIError = LLMAPIError
 
 
 class TicketNotFoundError(Exception):

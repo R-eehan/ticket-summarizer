@@ -18,7 +18,7 @@ from llm_provider import LLMProviderFactory
 from schemas import TicketSynthesis
 
 
-class GeminiSynthesizer:
+class TicketSynthesizer:
     """
     Async LLM client for ticket synthesis with rate limiting.
 

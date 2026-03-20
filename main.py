@@ -27,7 +27,7 @@ from rich.table import Table
 import config
 import utils
 from fetcher import ZendeskFetcher
-from synthesizer import GeminiSynthesizer
+from synthesizer import TicketSynthesizer
 from categorizer import TicketCategorizer
 from diagnostics_analyzer import DiagnosticsAnalyzer
 from csv_exporter import CSVExporter
@@ -66,7 +66,7 @@ class TicketSummarizer:
             self._llm_semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
         self.fetcher = ZendeskFetcher()
-        self.synthesizer = GeminiSynthesizer(model_provider=model_provider, semaphore=self._llm_semaphore)
+        self.synthesizer = TicketSynthesizer(model_provider=model_provider, semaphore=self._llm_semaphore)
         self.categorizer = TicketCategorizer(model_provider=model_provider, semaphore=self._llm_semaphore)
         self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider, semaphore=self._llm_semaphore)
 

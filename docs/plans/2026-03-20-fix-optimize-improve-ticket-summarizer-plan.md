@@ -633,14 +633,14 @@ Do NOT simply parrot this field — form your own assessment based on the commen
 
 ### Phase 3 Acceptance Criteria
 
-- [ ] All 3 modules use Pydantic schemas for LLM output (no regex parsing)
-- [ ] Azure and Gemini both enforce JSON schema at generation time
-- [ ] Categorization prompt includes 2-3 few-shot examples
-- [ ] Diagnostics prompt includes "cite your evidence" rule
-- [ ] Comment threads show `[Comment 3/12 | Agent | Day 3]` markers
-- [ ] Synthesis prompt receives `support_root_cause` as validation context
-- [ ] Gemini uses temperature 0.2 (verified in logs)
-- [ ] Output CSV/JSON format is backward compatible (same columns, additive only)
+- [x] All 3 modules use Pydantic schemas for LLM output (no regex parsing)
+- [x] Azure and Gemini both enforce JSON schema at generation time
+- [x] Categorization prompt includes 2-3 few-shot examples
+- [x] Diagnostics prompt includes "cite your evidence" rule
+- [x] Comment threads show `[Comment 3/12 | Agent | Day 3]` markers
+- [x] Synthesis prompt receives `support_root_cause` as validation context
+- [x] Gemini uses temperature 0.2 (verified in logs)
+- [x] Output CSV/JSON format is backward compatible (same columns, additive only)
 
 ---
 
@@ -682,9 +682,9 @@ Verified: `tqdm` is not imported anywhere in the codebase. Rich replaced it.
 
 ### Phase 4 Acceptance Criteria
 
-- [ ] No references to `GeminiAPIError` or `GeminiSynthesizer` in codebase
-- [ ] `pip install -r requirements.txt` succeeds
-- [ ] No unused imports (`tqdm`, old `google-generativeai`)
+- [x] No references to `GeminiAPIError` or `GeminiSynthesizer` in codebase
+- [x] `pip install -r requirements.txt` succeeds
+- [x] No unused imports (`tqdm`, old `google-generativeai`)
 
 ---
 
