@@ -414,12 +414,12 @@ def generate_content(self, prompt):
 
 ### Phase 2 Acceptance Criteria
 
-- [ ] Azure run of 500 tickets completes in <20 minutes (vs current ~60+ minutes)
-- [ ] Gemini free tier stays under 10 RPM (7s delay) for `gemini-2.5-flash`
-- [ ] `both` mode on Gemini does not double the request rate (shared semaphore)
+- [x] Azure run of 500 tickets completes in <20 minutes (vs current ~60+ minutes)
+- [x] Gemini free tier stays under 10 RPM (7s delay) for `gemini-2.5-flash`
+- [x] `both` mode on Gemini does not double the request rate (shared semaphore)
 - [ ] 429 errors from Azure are retried with exponential backoff
 - [ ] 400/401 errors fail immediately (no wasteful retries)
-- [ ] All modules use `asyncio.to_thread()` consistently
+- [x] All modules use `asyncio.to_thread()` consistently
 
 ---
 

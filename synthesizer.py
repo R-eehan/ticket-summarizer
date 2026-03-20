@@ -24,16 +24,13 @@ class GeminiSynthesizer:
     Now supports both Gemini and Azure OpenAI via LLMProviderFactory.
     """
 
-    def __init__(self, model_provider: str = "gemini"):
+    def __init__(self, model_provider: str = "gemini", semaphore: asyncio.Semaphore = None):
         """
         Initialize synthesizer with specified LLM provider.
 
         Args:
             model_provider: LLM provider name ("gemini" or "azure")
-                           Defaults to "gemini" for backward compatibility
-
-        Raises:
-            ValueError: If provider credentials are missing or invalid
+            semaphore: Optional shared semaphore for rate limiting (used in 'both' mode)
         """
         self.logger = logging.getLogger("ticket_summarizer.synthesizer")
         self.model_provider = model_provider
@@ -42,8 +39,13 @@ class GeminiSynthesizer:
         self.logger.info(f"Initializing synthesizer with model provider: {model_provider}")
         self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting
-        self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+        # Rate limiting — provider-aware, supports shared semaphore
+        if semaphore:
+            self.semaphore = semaphore
+        elif model_provider == "azure":
+            self.semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
         self.logger.info(f"Synthesizer initialized with {model_provider} provider")
 
@@ -167,11 +169,9 @@ class GeminiSynthesizer:
                 # Format the prompt
                 prompt = self.format_prompt(ticket_data)
 
-                # Call LLM API (via provider abstraction, synchronous but wrapped in async)
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.llm_client.generate_content(prompt)
+                # Call LLM API (via provider abstraction)
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_content, prompt
                 )
 
                 # Extract response text
@@ -190,9 +190,11 @@ class GeminiSynthesizer:
 
                 self.logger.info(f"Successfully synthesized ticket {ticket_id}")
 
-                # Add delay to respect free tier rate limits
-                if config.GEMINI_REQUEST_DELAY > 0:
+                # Add delay to respect rate limits (provider-aware)
+                if self.model_provider == "gemini" and config.GEMINI_REQUEST_DELAY > 0:
                     await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                elif self.model_provider == "azure" and config.AZURE_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.AZURE_REQUEST_DELAY)
 
                 return result
 

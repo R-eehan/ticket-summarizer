@@ -73,15 +73,20 @@ DEFAULT_MODEL_PROVIDER = "gemini"
 # RATE LIMITING CONFIGURATION
 # ============================================================================
 
-# Maximum concurrent requests
+# Zendesk concurrency
 ZENDESK_MAX_CONCURRENT = 10  # Conservative for Enterprise plan
-GEMINI_MAX_CONCURRENT = 1    # Sequential for free tier (10 req/min limit)
 
-# Request delay configuration
-GEMINI_REQUEST_DELAY = 7     # Seconds between Gemini API calls (keeps under 10/min)
+# Gemini free tier rate limiting
+GEMINI_MAX_CONCURRENT = 1    # Sequential for free tier (10 req/min limit)
+GEMINI_REQUEST_DELAY = int(os.getenv("GEMINI_REQUEST_DELAY", "7"))
+# NOTE: gemini-2.5-flash = 10 RPM (7s delay). gemini-3.1-flash-lite-preview = 15 RPM (4s delay).
+
+# Azure OpenAI rate limiting
+AZURE_MAX_CONCURRENT = int(os.getenv("AZURE_MAX_CONCURRENT", "10"))
+AZURE_REQUEST_DELAY = float(os.getenv("AZURE_REQUEST_DELAY", "0"))
 
 # Retry configuration
-MAX_RETRIES = 1              # One retry attempt
+MAX_RETRIES = 1              # One retry attempt (legacy, tenacity used for LLM calls)
 RETRY_DELAY_SECONDS = 2      # Delay between retries
 
 # Timeout configuration

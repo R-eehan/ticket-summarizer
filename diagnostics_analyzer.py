@@ -32,16 +32,13 @@ class DiagnosticsAnalyzer:
     considering both custom field data and ticket content.
     """
 
-    def __init__(self, model_provider: str = "gemini"):
+    def __init__(self, model_provider: str = "gemini", semaphore: asyncio.Semaphore = None):
         """
         Initialize Diagnostics analyzer with specified LLM provider.
 
         Args:
             model_provider: LLM provider name ("gemini" or "azure")
-                           Defaults to "gemini" for backward compatibility
-
-        Raises:
-            ValueError: If provider credentials are missing or invalid
+            semaphore: Optional shared semaphore for rate limiting (used in 'both' mode)
         """
         self.logger = logging.getLogger("ticket_summarizer.diagnostics_analyzer")
         self.model_provider = model_provider
@@ -50,9 +47,13 @@ class DiagnosticsAnalyzer:
         self.logger.info(f"Initializing Diagnostics analyzer with model provider: {model_provider}")
         self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting: sequential processing for free tier
-        self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
-        self.request_delay = config.GEMINI_REQUEST_DELAY
+        # Rate limiting — provider-aware, supports shared semaphore
+        if semaphore:
+            self.semaphore = semaphore
+        elif model_provider == "azure":
+            self.semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
         self.logger.info(f"Diagnostics analyzer initialized with {model_provider} provider")
 
@@ -143,8 +144,11 @@ class DiagnosticsAnalyzer:
 
                 self.logger.info(f"Successfully analyzed ticket {ticket_id}")
 
-                # Add rate limiting delay
-                await asyncio.sleep(self.request_delay)
+                # Add rate limiting delay (provider-aware)
+                if self.model_provider == "gemini" and config.GEMINI_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                elif self.model_provider == "azure" and config.AZURE_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.AZURE_REQUEST_DELAY)
 
                 return analysis_result
 
@@ -516,7 +520,7 @@ class DiagnosticsAnalyzer:
         progress_callback: Optional[Callable] = None
     ) -> List[Dict]:
         """
-        Analyze multiple tickets for Diagnostics applicability.
+        Analyze multiple tickets for Diagnostics applicability using asyncio.gather().
 
         Args:
             tickets: List of ticket dictionaries with synthesis data
@@ -526,49 +530,47 @@ class DiagnosticsAnalyzer:
             List of tickets with diagnostics analysis added
         """
         self.logger.info(f"Starting Diagnostics analysis for {len(tickets)} tickets")
-        analyzed_tickets = []
+
+        # Separate analyzable tickets from skipped ones
+        tickets_to_analyze = []
+        skipped_tickets = []
 
         for ticket in tickets:
-            ticket_id = ticket.get("ticket_id", "unknown")
-
-            # Skip tickets that failed synthesis
-            if ticket.get("processing_status") == "failed":
-                self.logger.warning(
-                    f"Skipping ticket {ticket_id} - synthesis failed"
-                )
+            if ticket.get("processing_status") == "failed" or \
+               ticket.get("processing_status") != "success" or \
+               "synthesis" not in ticket:
+                ticket_id = ticket.get("ticket_id", "unknown")
+                self.logger.warning(f"Skipping ticket {ticket_id} - no synthesis")
                 ticket["diagnostics_analysis_status"] = "skipped"
-                ticket["diagnostics_analysis_error"] = "Synthesis failed"
-                analyzed_tickets.append(ticket)
-
+                ticket["diagnostics_analysis_error"] = "Synthesis failed or missing"
+                skipped_tickets.append(ticket)
                 if progress_callback:
                     progress_callback(ticket_id, ticket)
+            else:
+                tickets_to_analyze.append(ticket)
 
-                continue
+        # Analyze in parallel with rate limiting via semaphore
+        tasks = [
+            self._analyze_with_progress(t, progress_callback)
+            for t in tickets_to_analyze
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Analyze ticket
-            try:
-                analysis_result = await self.analyze_ticket(ticket)
-
-                if analysis_result:
-                    ticket["diagnostics_analysis"] = analysis_result
-                    ticket["diagnostics_analysis_status"] = "success"
-                else:
-                    ticket["diagnostics_analysis_status"] = "failed"
-                    ticket["diagnostics_analysis_error"] = "Failed to parse LLM response"
-
-                analyzed_tickets.append(ticket)
-
-                if progress_callback:
-                    progress_callback(ticket_id, ticket)
-
-            except Exception as e:
-                self.logger.error(f"Failed to analyze ticket {ticket_id}: {e}")
+        # Process results
+        analyzed_tickets = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                ticket = tickets_to_analyze[i]
+                ticket_id = ticket.get("ticket_id", "unknown")
+                self.logger.error(f"Diagnostics analysis failed for ticket {ticket_id}: {result}")
                 ticket["diagnostics_analysis_status"] = "failed"
-                ticket["diagnostics_analysis_error"] = str(e)
+                ticket["diagnostics_analysis_error"] = str(result)
                 analyzed_tickets.append(ticket)
+            else:
+                analyzed_tickets.append(result)
 
-                if progress_callback:
-                    progress_callback(ticket_id, ticket)
+        # Add back skipped tickets
+        analyzed_tickets.extend(skipped_tickets)
 
         self.logger.info(
             f"Completed Diagnostics analysis: "
@@ -577,3 +579,31 @@ class DiagnosticsAnalyzer:
         )
 
         return analyzed_tickets
+
+    async def _analyze_with_progress(
+        self,
+        ticket_data: Dict,
+        progress_callback: Optional[Callable]
+    ) -> Dict:
+        """Analyze a ticket and call progress callback."""
+        ticket_id = ticket_data.get("ticket_id", "unknown")
+
+        try:
+            analysis_result = await self.analyze_ticket(ticket_data)
+
+            if analysis_result:
+                ticket_data["diagnostics_analysis"] = analysis_result
+                ticket_data["diagnostics_analysis_status"] = "success"
+            else:
+                ticket_data["diagnostics_analysis_status"] = "failed"
+                ticket_data["diagnostics_analysis_error"] = "Failed to parse LLM response"
+
+            if progress_callback:
+                progress_callback(ticket_id, ticket_data)
+
+            return ticket_data
+
+        except Exception as e:
+            if progress_callback:
+                progress_callback(ticket_id, ticket_data)
+            raise e

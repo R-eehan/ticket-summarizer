@@ -29,12 +29,13 @@ class TicketCategorizer:
     - Comprehensive validation and error handling
     """
 
-    def __init__(self, model_provider: str = "gemini"):
+    def __init__(self, model_provider: str = "gemini", semaphore: asyncio.Semaphore = None):
         """
         Initialize the categorizer with specified LLM provider and rate limiting.
 
         Args:
             model_provider: LLM provider name ("gemini" or "azure")
+            semaphore: Optional shared semaphore for rate limiting (used in 'both' mode)
         """
         self.logger = logging.getLogger("ticket_summarizer.categorizer")
         self.model_provider = model_provider
@@ -42,8 +43,13 @@ class TicketCategorizer:
         # Initialize LLM provider using factory pattern
         self.llm_client = LLMProviderFactory.get_provider(model_provider)
 
-        # Rate limiting
-        self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+        # Rate limiting — provider-aware, supports shared semaphore
+        if semaphore:
+            self.semaphore = semaphore
+        elif model_provider == "azure":
+            self.semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self.semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
 
         self.logger.info(f"Initialized Categorizer with provider: {model_provider}")
 
@@ -313,9 +319,11 @@ class TicketCategorizer:
                     f"(confidence: {categorization['confidence']})"
                 )
 
-                # Add delay to respect free tier rate limits
-                if config.GEMINI_REQUEST_DELAY > 0:
+                # Add delay to respect rate limits (provider-aware)
+                if self.model_provider == "gemini" and config.GEMINI_REQUEST_DELAY > 0:
                     await asyncio.sleep(config.GEMINI_REQUEST_DELAY)
+                elif self.model_provider == "azure" and config.AZURE_REQUEST_DELAY > 0:
+                    await asyncio.sleep(config.AZURE_REQUEST_DELAY)
 
                 return result
 

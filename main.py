@@ -59,10 +59,16 @@ class TicketSummarizer:
         self.console = Console()
         self.analysis_type = analysis_type
         self.model_provider = model_provider
+        # Create shared rate limiter per provider (prevents doubling in 'both' mode)
+        if model_provider == "azure":
+            self._llm_semaphore = asyncio.Semaphore(config.AZURE_MAX_CONCURRENT)
+        else:
+            self._llm_semaphore = asyncio.Semaphore(config.GEMINI_MAX_CONCURRENT)
+
         self.fetcher = ZendeskFetcher()
-        self.synthesizer = GeminiSynthesizer(model_provider=model_provider)  # Phase 3c: Multi-model
-        self.categorizer = TicketCategorizer(model_provider=model_provider)  # Phase 3a: POD categorization
-        self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider)  # Phase 3b + 3c
+        self.synthesizer = GeminiSynthesizer(model_provider=model_provider, semaphore=self._llm_semaphore)
+        self.categorizer = TicketCategorizer(model_provider=model_provider, semaphore=self._llm_semaphore)
+        self.diagnostics_analyzer = DiagnosticsAnalyzer(model_provider=model_provider, semaphore=self._llm_semaphore)
 
         # Statistics tracking for all phases
         self.stats = {
