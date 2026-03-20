@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Callable
 import config
 import utils
 from llm_provider import LLMProviderFactory
+from schemas import DiagnosticsAnalysis
 
 
 class DiagnosticsAnalyzer:
@@ -109,10 +110,10 @@ class DiagnosticsAnalyzer:
                     support_root_cause=support_root_cause
                 )
 
-                # Call LLM API (via provider abstraction)
+                # Call LLM API with structured output schema
                 self.logger.debug(f"Calling LLM API for ticket {ticket_id}")
                 response = await asyncio.to_thread(
-                    self.llm_client.generate_content, prompt
+                    self.llm_client.generate_content, prompt, DiagnosticsAnalysis
                 )
 
                 # Parse response

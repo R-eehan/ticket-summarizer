@@ -5,12 +5,14 @@ Categorizes synthesized tickets into PODs using Gemini LLM with confidence scori
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Callable
 import config
 import utils
 from llm_provider import LLMProviderFactory
+from schemas import TicketCategorization
 
 
 class TicketCategorizer:
@@ -98,6 +100,30 @@ class TicketCategorizer:
         )
 
         return prompt
+
+    def parse_structured_response(self, response_text: str) -> Dict:
+        """Parse structured JSON response. Falls back to regex parsing."""
+        try:
+            data = json.loads(response_text)
+            categorization = {
+                "primary_pod": data.get("primary_pod", ""),
+                "reasoning": data.get("reasoning", ""),
+                "confidence": data.get("confidence", "not confident"),
+                "confidence_reason": data.get("confidence_reason", ""),
+                "alternative_pods": data.get("alternative_pods", []),
+                "alternative_reasoning": data.get("alternative_reasoning"),
+                "metadata": {
+                    "keywords_matched": [],
+                    "decision_factors": []
+                }
+            }
+            # Validate POD
+            if categorization["primary_pod"] and not utils.validate_pod(categorization["primary_pod"]):
+                self.logger.warning(f"Invalid POD '{categorization['primary_pod']}' from structured output")
+            return categorization
+        except (json.JSONDecodeError, TypeError):
+            self.logger.debug("Structured JSON parsing failed, falling back to regex")
+            return self.parse_categorization_response(response_text)
 
     def parse_categorization_response(self, response_text: str) -> Dict:
         """
@@ -292,22 +318,22 @@ class TicketCategorizer:
                 # Prompt includes all POD definitions and categorization logic
                 prompt = self.format_categorization_prompt(ticket_data)
 
-                # Step 3: Call LLM for categorization (via provider abstraction)
+                # Step 3: Call LLM for categorization with structured output
                 response = await asyncio.to_thread(
-                    self.llm_client.generate_content, prompt
+                    self.llm_client.generate_content, prompt, TicketCategorization
                 )
 
                 # Validate response
                 if not response or not response.text:
                     raise utils.GeminiAPIError(
-                        f"Empty response from Gemini for ticket {ticket_id}"
+                        f"Empty response from LLM for ticket {ticket_id}"
                     )
 
                 response_text = response.text
                 self.logger.debug(f"Received categorization response for ticket {ticket_id}")
 
-                # Step 4: Parse LLM response into structured categorization data
-                categorization = self.parse_categorization_response(response_text)
+                # Step 4: Parse structured JSON (falls back to regex)
+                categorization = self.parse_structured_response(response_text)
 
                 # Step 5: Add categorization to ticket data
                 result = ticket_data.copy()

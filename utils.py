@@ -264,6 +264,9 @@ def format_comment_thread(comments: list) -> str:
     """
     Format comment thread into a readable string for LLM processing.
 
+    Uses structural markers [Comment N/Total | Role | Day N] to help
+    the LLM orient within long threads (reduces "lost in the middle" problem).
+
     Args:
         comments: List of comment dictionaries
 
@@ -273,24 +276,47 @@ def format_comment_thread(comments: list) -> str:
     if not comments:
         return "No comments available."
 
+    total = len(comments)
     formatted_comments = []
+
+    # Get ticket creation time from first comment for day calculation
+    first_created = comments[0].get('created_at', '') if comments else ''
+
     for i, comment in enumerate(comments, 1):
         author = comment.get('author_name', 'Unknown')
         created_at = comment.get('created_at', 'Unknown')
         body = strip_html(comment.get('body', ''))
-        visibility = "Public" if comment.get('public', True) else "Internal"
+        is_public = comment.get('public', True)
 
-        comment_str = f"""
-Comment #{i} ({visibility})
-Author: {author}
-Time: {created_at}
----
-{body}
----
-"""
-        formatted_comments.append(comment_str.strip())
+        # Heuristic role detection (avoids extra Zendesk API calls)
+        if not is_public:
+            role = "Agent (Internal)"
+        elif i == 1:
+            role = "Customer"
+        else:
+            role = "Agent/Customer"
+
+        # Calculate day number relative to first comment
+        day_num = _calculate_day_number(first_created, created_at)
+
+        header = f"[Comment {i}/{total} | {role} | Day {day_num}]"
+        comment_str = f"{header}\nAuthor: {author}\nTime: {created_at}\n---\n{body}\n---"
+        formatted_comments.append(comment_str)
 
     return "\n\n".join(formatted_comments)
+
+
+def _calculate_day_number(first_timestamp: str, current_timestamp: str) -> int:
+    """Calculate day number relative to first comment."""
+    try:
+        if not first_timestamp or not current_timestamp:
+            return 1
+        first_dt = datetime.fromisoformat(first_timestamp.replace('Z', '+00:00'))
+        current_dt = datetime.fromisoformat(current_timestamp.replace('Z', '+00:00'))
+        delta = current_dt - first_dt
+        return max(1, delta.days + 1)
+    except Exception:
+        return 1
 
 
 def generate_output_filename() -> str:

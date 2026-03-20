@@ -103,6 +103,8 @@ CRITICAL INSTRUCTIONS:
 - Pay close attention to the evolution of the conversation to understand the ACTUAL issue, not just the initial report
 - The issue initially reported may differ from the actual problem discovered during troubleshooting
 - The resolution should reflect what ACTUALLY fixed the problem, not just what was attempted
+- Identify the EXACT comment where the root cause was first discovered. If the initial report differs from the actual problem, state both and explain which comment revealed the true issue.
+- Do NOT invent or assume information not present in the ticket data
 
 TICKET DATA:
 Subject: {subject}
@@ -112,20 +114,18 @@ Description: {description}
 COMPLETE COMMENT THREAD:
 {all_comments}
 
+SUPPORT AGENT'S ROOT CAUSE (from Zendesk custom field):
+{support_root_cause}
+Note: This is the support agent's documented root cause. Use it to VALIDATE your own analysis.
+If your analysis differs from the agent's root cause, acknowledge both and explain the discrepancy.
+Do NOT simply parrot this field — form your own assessment based on the comment thread.
+
 ANALYSIS REQUIREMENTS:
-Provide your analysis in the following exact structure:
-
-**Issue Reported:**
-[One-liner describing what the customer initially reported or the actual issue identified]
-
-**Root Cause:**
-[One-liner describing the underlying technical cause of the issue]
-
-**Summary:**
-[3-4 line paragraph that captures the essence of the entire ticket, including key troubleshooting steps, turning points in the investigation, and how the solution was reached]
-
-**Resolution:**
-[One-liner that clearly states how the issue was actually resolved]
+Provide your analysis as JSON with these fields:
+- issue_reported: One-liner describing what the customer initially reported or the actual issue identified
+- root_cause: One-liner describing the underlying technical cause of the issue
+- summary: 3-4 line paragraph that captures the essence of the entire ticket, including key troubleshooting steps, turning points in the investigation, and how the solution was reached
+- resolution: One-liner that clearly states how the issue was actually resolved
 
 Focus on accuracy and technical precision. Extract information only from the provided data."""
 
@@ -315,6 +315,35 @@ CATEGORIZATION LOGIC:
    - Which POD "owns" the main functionality involved?
 5. If ambiguous between 2+ PODs, mark confidence as "not confident"
 
+WORKED EXAMPLES (for ambiguous cases):
+
+Example 1 - WFE vs Guidance:
+Subject: "Smart tip not showing on specific page"
+Issue: Element detection failure causing Smart Tip to not display
+Root Cause: Visibility rule condition evaluating false due to changed DOM
+Resolution: Modified visibility rule conditions to match updated page structure
+→ Primary POD: WFE
+→ Reasoning: While this involves a Smart Tip (Guidance content type), the root cause is a visibility rule evaluation failure, which is WFE territory. WFE owns element detection and visibility rules. The resolution involved rule logic changes, not content building.
+→ Confidence: confident
+
+Example 2 - Guidance vs CMM:
+Subject: "Flow not appearing after publishing to production"
+Issue: Flow shows in staging but not production after P2P
+Root Cause: Content was stuck in draft stage, P2P did not promote correctly
+Resolution: Re-published through CLM pipeline
+→ Primary POD: CMM
+→ Reasoning: The issue is about content lifecycle management (CLM) and Push to Production (P2P) pipeline, not about Flow logic or behavior. CMM owns the publishing pipeline. If the Flow had a branching logic issue, it would be Guidance.
+→ Confidence: confident
+
+Example 3 - WFE vs Capture:
+Subject: "User Action not triggering on button click"
+Issue: User Action not detecting element clicks
+Root Cause: Element detection failure - CSS selector not matching the button
+Resolution: Support reselected the element with updated selector
+→ Primary POD: WFE
+→ Reasoning: Although User Actions belong to Capture, the root cause is element detection failure (WFE). If the issue were about User Action configuration, event tracking, or attribute mapping, it would be Capture. Element detection is WFE regardless of what content type uses the element.
+→ Confidence: confident
+
 TICKET SYNTHESIS:
 Subject: {subject}
 
@@ -327,25 +356,13 @@ Summary: {summary}
 Resolution: {resolution}
 
 CATEGORIZATION OUTPUT:
-Provide your categorization in this EXACT format:
-
-**Primary POD:**
-[One of: WFE, Guidance, CMM, Hub, Analytics, Insights, Capture, Mirror, Desktop, Mobile, Labs, Platform Services, UI Platform]
-
-**Reasoning:**
-[2-3 sentences explaining why this POD was chosen based on the synthesis]
-
-**Confidence:**
-[Either "confident" or "not confident"]
-
-**Confidence Reason:**
-[Single sentence explaining why this confidence level was assigned]
-
-**Alternative PODs:**
-[Comma-separated list of other PODs this could belong to, or "None" if no alternatives]
-
-**Alternative Reasoning:**
-[1-2 sentences explaining why alternatives were considered, or "N/A" if no alternatives]"""
+Provide your categorization as JSON with these fields:
+- primary_pod: One of WFE, Guidance, CMM, Hub, Analytics, Insights, Capture, Mirror, Desktop, Mobile, Labs, Platform Services, UI Platform
+- reasoning: 2-3 sentences explaining why this POD was chosen
+- confidence: Either "confident" or "not confident"
+- confidence_reason: Single sentence explaining confidence level
+- alternative_pods: List of other possible PODs, or empty list
+- alternative_reasoning: 1-2 sentences why alternatives were considered, or null"""
 
 # ============================================================================
 # DIAGNOSTICS ANALYSIS CONFIGURATION (Phase 3b + Phase 6 Triage/Fix Enhancement)
@@ -381,6 +398,12 @@ Diagnostics is a self-serviceable troubleshooting tool within Whatfix Studio tha
 4. **CHECK your reasoning against the synthesis**
    - Before outputting, verify EACH claim in your reasoning appears in the input
    - If you cannot quote the synthesis to support a claim, remove that claim
+
+5. **CITE YOUR EVIDENCE**
+   - In every reasoning field, explicitly quote the phrase from the synthesis that supports your claim
+   - Format: [EVIDENCE: "...quoted text from synthesis..."]
+   - If you cannot quote the synthesis to support a claim, DO NOT make that claim
+   - This applies to triage_reasoning, fix_reasoning, and was_diagnostics_used reasoning
 
 ---
 

@@ -7,6 +7,7 @@ Implements rate limiting, retry logic, and response parsing.
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Callable
@@ -14,6 +15,7 @@ from typing import Dict, List, Optional, Callable
 import config
 import utils
 from llm_provider import LLMProviderFactory
+from schemas import TicketSynthesis
 
 
 class GeminiSynthesizer:
@@ -63,6 +65,10 @@ class GeminiSynthesizer:
         description = utils.strip_html(ticket_data.get('description', 'No description'))
         comments = ticket_data.get('comments', [])
 
+        # Extract support agent's root cause (Phase 6 enhancement)
+        custom_fields = ticket_data.get('custom_fields', {})
+        support_root_cause = custom_fields.get('support_root_cause', 'Not provided')
+
         # Format comment thread
         comment_thread = utils.format_comment_thread(comments)
 
@@ -70,10 +76,29 @@ class GeminiSynthesizer:
         prompt = config.LLM_PROMPT_TEMPLATE.format(
             subject=subject,
             description=description,
-            all_comments=comment_thread
+            all_comments=comment_thread,
+            support_root_cause=support_root_cause
         )
 
         return prompt
+
+    def parse_structured_response(self, response_text: str) -> Dict:
+        """Parse structured JSON response from LLM. Falls back to regex parsing."""
+        try:
+            data = json.loads(response_text)
+            synthesis = {
+                "issue_reported": data.get("issue_reported", ""),
+                "root_cause": data.get("root_cause", ""),
+                "summary": data.get("summary", ""),
+                "resolution": data.get("resolution", ""),
+            }
+            missing = [k for k, v in synthesis.items() if not v]
+            if missing:
+                self.logger.warning(f"Structured response missing fields: {missing}")
+            return synthesis
+        except (json.JSONDecodeError, TypeError):
+            self.logger.debug("Structured JSON parsing failed, falling back to regex")
+            return self.parse_response(response_text)
 
     def parse_response(self, response_text: str) -> Dict:
         """
@@ -169,9 +194,9 @@ class GeminiSynthesizer:
                 # Format the prompt
                 prompt = self.format_prompt(ticket_data)
 
-                # Call LLM API (via provider abstraction)
+                # Call LLM API with structured output schema
                 response = await asyncio.to_thread(
-                    self.llm_client.generate_content, prompt
+                    self.llm_client.generate_content, prompt, TicketSynthesis
                 )
 
                 # Extract response text
@@ -181,8 +206,8 @@ class GeminiSynthesizer:
                 response_text = response.text
                 self.logger.debug(f"Received response for ticket {ticket_id}")
 
-                # Parse the response
-                synthesis = self.parse_response(response_text)
+                # Parse structured JSON response (falls back to regex if JSON fails)
+                synthesis = self.parse_structured_response(response_text)
 
                 # Add to ticket data
                 result = ticket_data.copy()
